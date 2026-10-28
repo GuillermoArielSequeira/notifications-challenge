@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Variables de entorno
+.env
+.env.*
+!.env.example
+!.env.test.example
+
+# React
+node_modules/
+dist/
+
+# System
+.DS_Store
