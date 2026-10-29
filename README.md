@@ -11,6 +11,59 @@ The application will support user authentication, notification management, and s
 
 **Current status:** Infrastructure and testing setup completed. Business features and frontend implementation are pending.
 
+## Live Deployment
+
+The backend API is deployed on Render, using a managed PostgreSQL database hosted on Neon.
+
+**Live URLs:**
+
+- [Backend API](https://notifications-challenge.onrender.com)
+- [Swagger Documentation](https://notifications-challenge.onrender.com/docs)
+- [Health Check](https://notifications-challenge.onrender.com/health)
+
+### Infrastructure
+
+| Component | Provider |
+|---|---|
+| Backend | Render (Docker) |
+| Database | Neon (PostgreSQL) |
+| CI | GitHub Actions |
+| Test Coverage | Coveralls |
+
+### Deployment Configuration
+
+The backend is deployed from the `master` branch using `backend/Dockerfile`.
+
+Database credentials and connection settings are configured through Render environment variables and are not committed to the repository.
+
+The deployment environment uses a separate PostgreSQL database from local development and testing.
+
+### Environment Variables
+
+The following environment variables are required:
+
+```dotenv
+POSTGRES_USER=
+POSTGRES_PASSWORD=
+POSTGRES_DB=
+POSTGRES_HOST=
+POSTGRES_PORT=5432
+POSTGRES_SSLMODE=require
+POSTGRES_CHANNEL_BINDING=require
+```
+
+### Database Migrations
+
+Database schema changes are managed with Alembic.
+
+Migrations are not currently executed automatically during deployment and must be applied separately when required.
+
+### Free Tier Limitations
+
+The Render free instance may become inactive after periods without traffic. The first request after inactivity may take longer to respond.
+
+This deployment is intended for demonstration and technical evaluation rather than production workloads.
+
 ## Tech Stack
 
 **Backend**
@@ -278,7 +331,7 @@ The goal is to make new channels extensible without changing the notification or
 - [x] Initial automated tests
 - [x] Docker development and testing environments
 - [x] GitHub Actions and Coveralls
-- [ ] Deployment
+- [x] Deployment
 - [ ] User registration and authentication
 - [ ] Notification CRUD
 - [ ] Email, SMS, and Push delivery strategies
