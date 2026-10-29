@@ -1,0 +1,23 @@
+# Imagen de Python para ejecutar los tests
+FROM python:3.13-slim
+
+WORKDIR /workspace/backend
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Instalamos dependencias de producción y testing
+COPY backend/requirements.txt ./requirements.txt
+COPY backend/requirements-dev.txt ./requirements-dev.txt
+
+RUN python -m pip install --no-cache-dir -r requirements-dev.txt
+
+# Copiamos la aplicación y sus tests
+COPY backend/app ./app
+COPY backend/tests ./tests
+
+# Dejamos disponibles las migraciones para futuros tests
+COPY backend/alembic.ini ./alembic.ini
+COPY backend/migrations ./migrations
+
+CMD ["python", "-m", "pytest", "-v"]
