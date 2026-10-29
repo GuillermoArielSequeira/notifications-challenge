@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     postgres_db: str
     postgres_host: str = "127.0.0.1"
     postgres_port: int = 5433
+    postgres_sslmode: str | None = None
+    postgres_channel_binding: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=ROOT_DIR / ".env",
@@ -28,6 +30,15 @@ class Settings(BaseSettings):
 
     @property
     def database_url(self) -> URL:
+
+        query: dict[str, str] = {}
+
+        if self.postgres_sslmode:
+            query["sslmode"] = self.postgres_sslmode
+
+        if self.postgres_channel_binding:
+            query["channel_binding"] = self.postgres_channel_binding
+
         """Construye la URL de conexión a PostgreSQL."""
 
         return URL.create(
@@ -37,6 +48,7 @@ class Settings(BaseSettings):
             host=self.postgres_host,
             port=self.postgres_port,
             database=self.postgres_db,
+            query=query,
         )
 
 
