@@ -20,11 +20,14 @@ COPY backend/app ./app
 COPY backend/migrations ./migrations
 COPY backend/alembic.ini ./alembic.ini
 
-# Puerto donde escuchará FastAPI
+# Copiamos el script de inicio.
+COPY backend/start.sh ./start.sh
+
+# Puerto utilizado por FastAPI.
 EXPOSE 8000
 
-# Iniciamos el servidor
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Ejecutamos nuestro script.
+CMD ["sh", "./start.sh"]
 
 # FROM	Selecciona Python 3.13 como base
 # WORKDIR	Define el directorio de trabajo
