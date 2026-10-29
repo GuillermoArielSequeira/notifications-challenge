@@ -1,0 +1,29 @@
+# Nombre que aparecerá en GitHub Actions
+name: Backend CI
+
+# Eventos que ejecutan el workflow
+on:
+  push:
+  pull_request:
+
+# Solo necesitamos permisos para leer el repositorio
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Run backend tests
+    runs-on: ubuntu-24.04
+
+    steps:
+      # Descarga el código del repositorio
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Verifica que Docker Compose esté disponible
+      - name: Set up Docker Compose
+        uses: docker/setup-compose-action@v2
+
+      # Ejecuta nuestro script de testing
+      - name: Run tests
+        run: ./up_test.sh
