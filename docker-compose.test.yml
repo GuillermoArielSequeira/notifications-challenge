@@ -33,4 +33,11 @@ services:
       db_test:
         condition: service_healthy
 
-    command: python -m pytest -v --cov=app --cov-report=term-missing
+    volumes:
+    - ./coverage:/reports
+
+    command: >
+      python -m pytest -v
+      --cov=app
+      --cov-report=term-missing
+      --cov-report=xml:/reports/coverage.xml

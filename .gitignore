@@ -19,3 +19,6 @@ dist/
 
 # System
 .DS_Store
+
+# Coverage reports
+/coverage/
