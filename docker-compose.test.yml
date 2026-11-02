@@ -26,6 +26,7 @@ services:
       POSTGRES_DB: notifications_test
       POSTGRES_HOST: db_test
       POSTGRES_PORT: "5432"
+      JWT_SECRET_KEY: "test-only-secret-not-for-production-32-chars"
 
       TEST_DATABASE_URL: "postgresql+psycopg://test_user:test_password_local@db_test:5432/notifications_test"
 

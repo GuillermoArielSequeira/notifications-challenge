@@ -25,7 +25,7 @@ A full-stack take-home challenge for an authenticated notification management sy
 - Follow a feature-oriented, layered architecture: Controller → Service → Repository → Models.
 - Controllers handle HTTP concerns; services own business logic; repositories handle database access.
 - Use Pydantic for API contracts and SQLAlchemy for persistence models.
-- Use the Strategy pattern for notification delivery channels (Email, SMS, Push).
+- Use design patterns when appropriate, selecting the most suitable pattern for each use case. Avoid forcing patterns or introducing unnecessary complexity.
 - Keep implementations simple; avoid unnecessary abstractions and dependencies.
 - Use descriptive English identifiers and follow existing code conventions.
 
