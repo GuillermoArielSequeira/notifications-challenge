@@ -11,14 +11,34 @@ Shared project memory for AI development sessions. Keep it concise and focused o
 - User registration, JSON login with JWT access tokens, and `/api/v1/users/me` are implemented alongside diagnostic endpoints.
 - API routes require a bearer token except registration, login, `/health`, and documentation. Future protected routers belong under `protected_api` in `app/main.py`.
 - Notification management, delivery strategies, and the frontend are pending.
-- Backend verification: `./up_test.sh` passes all 74 tests on PostgreSQL 17 with 99% application coverage, including authentication, service injection, migration/model consistency, database isolation, and the custom validation error contract.
+- Última verificación backend registrada antes de esta adaptación SDD: `./up_test.sh` pasó 74 tests con PostgreSQL 17 y 99% de cobertura. Es un resultado histórico, no una nueva ejecución ni garantía del estado actual.
+
+## Trabajo activo
+- Spec: ninguna activa; `specs/001/` existe vacía y se conserva sin renombrar.
+- Fase: adaptación del flujo SDD aplicada y comprobada documentalmente; sin implementación de una funcionalidad ni validación nueva del backend.
+- Aprobaciones: adaptación del flujo aprobada; spec, plan y tareas de la próxima funcionalidad todavía no definidos ni aprobados.
+- Próximo paso: activar Docker y repetir `./up_test.sh`; después acordar la siguiente funcionalidad y redactar su spec antes de proponer el plan técnico.
+- Verificación de la adaptación: metadatos YAML, referencias, límites de la constitución y `git diff --check` comprobados correctamente, sin instalar dependencias.
+- Bloqueos: `./up_test.sh` no pudo iniciar la suite porque Docker no está activo; no hay bloqueos de requisitos identificados.
 
 ## Decisions and Rationale
+
+### Adopción de SDD
+- **Decisión:** Usar la skill local `sdd` y una sola carpeta por funcionalidad con spec, plan y tareas; conservar la constitución y las skills de Python, sin incorporar Superpowers ni dependencias nuevas.
+- **Motivo:** Mantener aprobaciones explícitas, trazabilidad entre requisitos y tests y ejecución de una tarea por vez, con un proceso entendible para quien empieza a programar. La adopción no crea specs retrospectivas ni modifica la aplicación.
+
+### Constitución del proyecto
+- **Decisión:** Se aprobó `docs/constitution.md` y se enlazó desde `AGENTS.md`.
+- **Motivo:** Mantener criterios verificables de alcance, sencillez y seguridad para que alguien que empieza a programar pueda mantener el challenge, sin refactorizar lo existente como parte de esta adopción.
 
 ### Deployment migrations
 - **Decision:** Execute Alembic migrations during application startup using `backend/start.sh`.
 - **Reason:** The current deployment uses a single Render instance on the free plan. This provides a simple automated migration process without requiring a separate deployment job.
 - **Revisit when:** Moving to multiple application instances or a production deployment requiring independent migration execution.
+
+### Project-local agent skills
+- **Decision:** Install `python-anti-patterns`, `python-error-handling`, and `python-testing-patterns` from `wshobson/agents` in `.agents/skills/`, with installation metadata in `skills-lock.json`. `python-project-structure` remains optional and is not installed.
+- **Reason:** Add review, error-handling, and testing guidance for this repository without a global skill installation or application refactor.
 
 ## Known Issues and Learnings
 

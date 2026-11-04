@@ -3,8 +3,8 @@
 A full-stack take-home challenge for an authenticated notification management system. Prioritize maintainable code, clear responsibilities, and automated verification.
 
 ## Current scope
-- Only backend infrastructure and diagnostic endpoints are implemented.
-- Authentication, notification CRUD, delivery strategies, and the React frontend are planned, not implemented.
+- Están implementados la infraestructura backend, los endpoints de diagnóstico, el registro, el login JWT y el acceso autenticado.
+- El CRUD de notificaciones, las estrategias de envío y el frontend React siguen pendientes.
 - Never assume a planned component or abstraction already exists.
 
 ## Stack and structure
@@ -35,11 +35,11 @@ A full-stack take-home challenge for an authenticated notification management sy
 - Import new SQLAlchemy models into Alembic metadata configuration before autogenerating migrations.
 - Review generated migrations before applying them.
 - Use the `db_test_client` fixture for database-backed API tests.
-- Tests do not currently initialize schema or roll back changes automatically; add appropriate test isolation when needed.
+- Las fixtures aplican migraciones a `notifications_test` y aíslan cada test con una transacción externa y savepoints, incluso cuando la aplicación hace commit.
 
 ## Working agreement
 - Inspect existing code and conventions before making changes.
-- For nontrivial features or architectural changes, propose a short plan before implementation.
+- Antes de implementar cambios funcionales, obtener aprobación de la spec, el plan y las tareas según la skill `sdd`.
 - Prefer small, focused changes; avoid unrelated refactors and extra features.
 - Add or update tests when implementing business logic.
 - After changes, report modified files, verification results, and relevant decisions.
@@ -52,11 +52,19 @@ A full-stack take-home challenge for an authenticated notification management sy
 - Keep permanent development rules in AGENTS.md, not MEMORY.md.
 - Never store credentials, tokens, or sensitive information.
 
+## Spec-Driven Development
+- Cargar la skill `sdd` para trabajar con specs, planes, tareas o su implementación. Cada funcionalidad vive en `specs/NNN-nombre/`, con `spec.md`, `plan.md` y `tasks.md`.
+- `docs/constitution.md` fija los principios; la spec aprobada define el comportamiento y el alcance; `AGENTS.md` contiene instrucciones operativas.
+- `MEMORY.md` indica la spec activa, la fase, las aprobaciones, el próximo paso y los bloqueos; no duplica requisitos ni listas de tareas.
+- Las skills aportan guías técnicas, pero no autorizan cambios de alcance ni sustituyen las decisiones aprobadas. Ante contradicciones entre documentos o con el código, señalarlas y pedir una decisión antes de continuar con el trabajo afectado.
+- Aplicar SDD a cambios nuevos; no crear specs retrospectivas ni refactorizar lo existente solo para adoptar el proceso.
+
 ## Boundaries
 - Ask before adding major dependencies, changing architecture, or modifying deployment configuration.
 - Never expose secrets, run destructive database operations, or modify production data without explicit approval.
 - Do not commit or push changes unless requested.
 
 ## Project context
+- Consultar `docs/constitution.md`, `MEMORY.md` y los documentos de la spec activa en `specs/NNN-nombre/` antes de proponer o implementar cambios. Si no hay spec activa, no asumir una: proponerla y esperar aprobación.
 - Refer to `README.md` for setup, infrastructure, and architectural overview.
 - If `MEMORY.md` exists, read it at the start of significant work and update only meaningful decisions, pitfalls, and pending tasks.
