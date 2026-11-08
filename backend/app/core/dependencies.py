@@ -8,8 +8,10 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import decode_access_token
 from app.models.user import User
+from app.repositories.notifications import NotificationRepository
 from app.repositories.users import UserRepository
 from app.services.auth import AuthService
+from app.services.notifications import NotificationService
 
 
 bearer = HTTPBearer(auto_error=False)
@@ -21,6 +23,13 @@ def get_auth_service(db: DatabaseSession) -> AuthService:
 
 
 AuthServiceDependency = Annotated[AuthService, Depends(get_auth_service)]
+
+
+def get_notification_service(db: DatabaseSession) -> NotificationService:
+    return NotificationService(NotificationRepository(db))
+
+
+NotificationServiceDependency = Annotated[NotificationService, Depends(get_notification_service)]
 
 
 def get_current_user(

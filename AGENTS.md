@@ -3,8 +3,9 @@
 A full-stack take-home challenge for an authenticated notification management system. Prioritize maintainable code, clear responsibilities, and automated verification.
 
 ## Current scope
-- Están implementados la infraestructura backend, los endpoints de diagnóstico, el registro, el login JWT y el acceso autenticado.
-- El CRUD de notificaciones, las estrategias de envío y el frontend React siguen pendientes.
+- Están implementados la infraestructura backend, los endpoints de diagnóstico, el registro, el login JWT, el acceso autenticado y el CRUD de notificaciones propias.
+- Notificaciones expone POST/GET `/api/v1/notifications` y PATCH/DELETE `/api/v1/notifications/{notification_id}`, protegidos por JWT y filtrados por propietario. El borrado es definitivo; los recursos ajenos e inexistentes comparten el mismo 404.
+- Las estrategias de envío y el frontend React siguen pendientes. El CRUD almacena notificaciones, no las envía.
 - Never assume a planned component or abstraction already exists.
 
 ## Stack and structure

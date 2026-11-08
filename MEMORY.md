@@ -10,16 +10,16 @@ Shared project memory for AI development sessions. Keep it concise and focused o
 - Database migrations run automatically before FastAPI starts.
 - User registration, JSON login with JWT access tokens, and `/api/v1/users/me` are implemented alongside diagnostic endpoints.
 - API routes require a bearer token except registration, login, `/health`, and documentation. Future protected routers belong under `protected_api` in `app/main.py`.
-- Notification management, delivery strategies, and the frontend are pending.
-- Última verificación backend registrada antes de esta adaptación SDD: `./up_test.sh` pasó 74 tests con PostgreSQL 17 y 99% de cobertura. Es un resultado histórico, no una nueva ejecución ni garantía del estado actual.
+- El CRUD HTTP de notificaciones propias está implementado con autenticación JWT, edición parcial, borrado definitivo y aislamiento entre propietarios. Estrategias de envío y frontend siguen pendientes. Estos cambios no fueron desplegados.
+- Última verificación backend: el 2026-11-08, `./up_test.sh` pasó 426 tests con Python 3.13.18 y PostgreSQL 17, 99% de cobertura global y 100% en los módulos de notificaciones. Se comprobaron servicio, repositorio, CRUD HTTP, validaciones, autenticación, aislamiento, OpenAPI y regresiones de migraciones; reporte XML generado.
 
 ## Trabajo activo
-- Spec: ninguna activa; `specs/001/` existe vacía y se conserva sin renombrar.
-- Fase: adaptación del flujo SDD aplicada y comprobada documentalmente; sin implementación de una funcionalidad ni validación nueva del backend.
-- Aprobaciones: adaptación del flujo aprobada; spec, plan y tareas de la próxima funcionalidad todavía no definidos ni aprobados.
-- Próximo paso: activar Docker y repetir `./up_test.sh`; después acordar la siguiente funcionalidad y redactar su spec antes de proponer el plan técnico.
-- Verificación de la adaptación: metadatos YAML, referencias, límites de la constitución y `git diff --check` comprobados correctamente, sin instalar dependencias.
-- Bloqueos: `./up_test.sh` no pudo iniciar la suite porque Docker no está activo; no hay bloqueos de requisitos identificados.
+- Spec: [001 — Gestión de notificaciones propias](specs/001-notifications/spec.md), aprobada explícitamente por el usuario; la carpeta vacía `specs/001/` se renombró según la propuesta aprobada.
+- Fase: T1–T7 completadas y verificadas técnicamente; pendiente conformidad del usuario para cerrar la spec.
+- Aprobaciones: spec, [plan técnico](specs/001-notifications/plan.md) y [tareas](specs/001-notifications/tasks.md) aprobados; el 2026-11-08 el usuario autorizó terminar T4–T7 sin pausas y recibir solo el resultado final. No supone conformidad anticipada para cerrar la spec.
+- Próximo paso: recibir conformidad con el resultado final antes de cambiar `spec.md` a implementada; no asumir otra spec ni iniciar envíos o frontend.
+- Verificación actual: tests primero con rojo/verde por tarea; suite completa de 426 tests y comprobaciones de OpenAPI, XML, formato y enlaces correctas. Evidencias en `tasks.md`. Solo se usó `notifications_test`; desarrollo y producción intactos.
+- Bloqueos técnicos: ninguno. Docker Desktop se inició porque estaba detenido; las verificaciones posteriores pasaron.
 
 ## Decisions and Rationale
 
@@ -60,6 +60,10 @@ Shared project memory for AI development sessions. Keep it concise and focused o
 - **Decision:** Keep HTTP 422 and the `detail` list, but expose only `type`, `field`, and a Spanish `message` per validation error. Whole-body errors use a null field; nested paths retain their indices. HTTP 401 and 409 formats remain unchanged.
 - **Reason:** Provide clear, machine-readable errors without leaking submitted values or internal validator messages. `app/core/exception_handlers.py` formats errors and `app/schemas/errors.py` defines the shared response/OpenAPI contract.
 
+### Notificaciones propias
+- **Decisión:** Buscar conjuntamente por UUID y propietario antes de editar/borrar y usar la misma excepción/404 para recursos ajenos e inexistentes, para no revelar su existencia. Los routers reciben el servicio inyectado y no construyen repositorios.
+- **Decisión:** Extraer PATCH con `model_dump(exclude_unset=True)` tras validar con Pydantic; el servicio mantiene la lista de campos permitidos. Así se conservan omisiones sin aceptar null, cambios de identidad o asignación arbitraria de atributos desde HTTP.
+
 ## Next Steps
-- Add notification CRUD and ownership checks using the authenticated user dependency.
+- Cerrar la spec 001 solo tras la conformidad del usuario; acordar una nueva spec antes de abordar envíos o frontend.
 - Before production use, address rate limiting, email verification, password recovery, and token lifecycle requirements.

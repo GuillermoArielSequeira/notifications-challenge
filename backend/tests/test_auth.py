@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import jwt
@@ -153,9 +154,14 @@ def test_deleted_user_token_is_rejected(db_test_client, db_session, auth_headers
 
 def test_migration_matches_models(db_session):
     from alembic.autogenerate import compare_metadata
+    from alembic.config import Config
     from alembic.migration import MigrationContext
+    from alembic.script import ScriptDirectory
     from app.core.base import Base
 
     context = MigrationContext.configure(db_session.connection())
     assert compare_metadata(context, Base.metadata) == []
-    assert db_session.scalar(text("SELECT version_num FROM alembic_version")) == "8c6c2ab17d42"
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    head = ScriptDirectory.from_config(config).get_current_head()
+    assert head is not None
+    assert db_session.scalar(text("SELECT version_num FROM alembic_version")) == head

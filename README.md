@@ -9,7 +9,7 @@ A full-stack take-home challenge to build a notification management system for a
 
 The application will support user authentication, notification management, and simulated delivery through multiple channels: Email, SMS, and Push Notifications.
 
-**Current status:** Backend infrastructure, user registration, JWT login, and authenticated API access are implemented. Notification features and frontend implementation are pending.
+**Estado actual del código:** infraestructura backend, registro, login JWT, acceso autenticado y CRUD de notificaciones propias implementados. Las estrategias de envío y el frontend siguen pendientes. La disponibilidad en las URLs públicas depende de la versión desplegada.
 
 ## Live Deployment
 
@@ -96,6 +96,9 @@ notifications-challenge/
 │   ├── app/
 │   │   ├── core/           # Configuration and database
 │   │   ├── routers/        # API endpoints
+│   │   ├── services/       # Casos de uso
+│   │   ├── repositories/   # Acceso a datos
+│   │   ├── models/         # Modelos SQLAlchemy
 │   │   ├── schemas/        # Pydantic schemas
 │   │   └── main.py         # FastAPI application
 │   ├── migrations/         # Alembic migrations
@@ -236,6 +239,67 @@ Every `422` validation response uses a `detail` list with exactly three properti
 
 Other codes include `password_too_long`, `required_field`, `invalid_type`, `invalid_json`, and `invalid_body`. Fields omit request-source prefixes such as `body`; nested fields retain their full path (for example, `users.0.email`). Errors affecting the whole request body use `"field": null`. Responses never include submitted values, internal validation context, or raw validator messages. Swagger documents this same response schema. Authentication errors (`401`) and duplicate-email errors (`409`) keep their existing format.
 
+## Notificaciones propias
+
+Las cuatro operaciones requieren `Authorization: Bearer <access_token>`. El propietario se obtiene del token; nunca se acepta desde el cuerpo de la solicitud. Esta funcionalidad almacena notificaciones, **no las envía**, ni siquiera de forma simulada.
+
+| Método | Ruta | Respuesta correcta |
+|---|---|---|
+| POST | `/api/v1/notifications` | 201 con la notificación creada |
+| GET | `/api/v1/notifications` | 200 con todas las propias; `[]` si no hay |
+| PATCH | `/api/v1/notifications/{notification_id}` | 200 con la notificación modificada |
+| DELETE | `/api/v1/notifications/{notification_id}` | 204 sin cuerpo; borrado definitivo |
+
+La representación pública contiene únicamente `id` (UUID), `title`, `content` y `channel`:
+
+```json
+{
+  "id": "b24ac4b7-f8cb-4d33-aaf3-2d8e2a245938",
+  "title": "Recordatorio",
+  "content": "Revisar las notificaciones",
+  "channel": "email"
+}
+```
+
+### Validación y aislamiento
+
+- Crear exige `title` de 1–200 caracteres, `content` de 1–5000 y un único canal: `email`, `sms` o `push`, exactamente en minúsculas.
+- Los textos se conservan tal como se reciben, incluidos espacios significativos. Se rechazan textos vacíos o compuestos únicamente por espacios en blanco y valores que no sean cadenas.
+- PATCH modifica solo los campos enviados. Los omitidos conservan su valor; enviar `null` o un objeto vacío se rechaza. Se validan todos los cambios antes de persistir, sin actualizaciones parciales ante errores.
+- No se admiten `id`, `user_id` ni propiedades desconocidas en creación o edición.
+- El listado no garantiza orden y nunca incluye recursos de otro usuario. No tiene filtros ni paginación.
+- UUID mal formado o entrada inválida: **422**, con `detail: [{type, field, message}]` y mensajes seguros en español. Los códigos adicionales incluyen `blank_text`, `invalid_channel`, `invalid_uuid`, `unexpected_field`, `null_not_allowed` y `empty_update`.
+- Token ausente, inválido o vencido: **401**, con `WWW-Authenticate: Bearer`.
+- Editar o eliminar una notificación ajena, inexistente o ya eliminada: el mismo **404** con `{"detail":"Notificación no encontrada."}`, sin revelar su existencia ni modificar datos.
+
+### Ejemplos locales
+
+Usá el token obtenido en el login y reemplazá `<notification_id>` por el UUID devuelto al crear:
+
+```bash
+# Crear
+curl -X POST http://localhost:8000/api/v1/notifications \
+  -H 'Authorization: Bearer <access_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Recordatorio","content":"Revisar las notificaciones","channel":"email"}'
+
+# Listar las propias
+curl http://localhost:8000/api/v1/notifications \
+  -H 'Authorization: Bearer <access_token>'
+
+# Cambiar únicamente el título
+curl -X PATCH 'http://localhost:8000/api/v1/notifications/<notification_id>' \
+  -H 'Authorization: Bearer <access_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Nuevo recordatorio"}'
+
+# Eliminar definitivamente
+curl -X DELETE 'http://localhost:8000/api/v1/notifications/<notification_id>' \
+  -H 'Authorization: Bearer <access_token>'
+```
+
+Swagger (`/docs`) documenta autenticación, contratos y respuestas. No hay endpoint de consulta individual, envíos, destinatarios, programación, estados, recuperación de eliminadas ni frontend en este alcance.
+
 ## Database
 
 PostgreSQL runs inside Docker, with isolated development and testing environments.
@@ -272,6 +336,13 @@ Migration generation requires the SQLAlchemy models to be imported into Alembic'
 ## Testing
 
 Tests are implemented with pytest and FastAPI's TestClient. The suite covers registration, password hashing, login, JWT validation, route protection, database connectivity, and migration/model consistency.
+
+También cubre contratos de notificaciones, servicio con repositorio sustituido, persistencia y rollback en PostgreSQL real, CRUD HTTP, validación sin cambios parciales, aislamiento entre dos propietarios, tokens inválidos y OpenAPI. Para verificar la funcionalidad desde la raíz:
+
+```bash
+docker compose -f docker-compose.test.yml run --rm --build tests \
+  python -m pytest -v tests/test_notifications.py tests/test_notification_service.py tests/test_notification_schemas.py
+```
 
 The test environment uses a separate PostgreSQL container to avoid modifying development data.
 
@@ -365,6 +436,8 @@ PostgreSQL
 
 Database sessions, the authentication service, and authenticated users are provided via FastAPI dependency injection. `app/core/dependencies.py` assembles `AuthService` through `get_auth_service`; auth endpoints receive `AuthServiceDependency` instead of constructing services or repositories. Tests can override `get_auth_service` through `app.dependency_overrides` to exercise HTTP behavior without a database. In `app/main.py`, public auth routes are mounted separately from `protected_api`; attach future protected routers to `protected_api` so they inherit authentication.
 
+Notificaciones sigue la misma separación: `app/routers/notifications.py` recibe `CurrentUser` y `NotificationServiceDependency`; `get_notification_service` construye el servicio y el repositorio con la sesión inyectada. El servicio limita los campos editables y exige una búsqueda conjunta por UUID y propietario antes de editar o borrar; el repositorio ejecuta SQL, confirma una vez por escritura y revierte errores de SQLAlchemy. La tabla usa `VARCHAR` con CHECK para los canales e índice por propietario, sin ENUM nativo. No se incorporaron dependencias nuevas.
+
 ### Notification Delivery Strategy (Planned)
 
 The notification system will use the Strategy Pattern to support multiple delivery channels.
@@ -400,7 +473,7 @@ The goal is to make new channels extensible without changing the notification or
 - [x] GitHub Actions and Coveralls
 - [x] Deployment
 - [x] User registration and authentication
-- [ ] Notification CRUD
+- [x] Notification CRUD
 - [ ] Email, SMS, and Push delivery strategies
 - [ ] React frontend
 

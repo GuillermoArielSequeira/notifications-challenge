@@ -155,3 +155,31 @@ def test_length_message_for_other_fields():
         "type": "string_too_long", "field": "name",
         "message": "El campo debe tener como máximo 20 caracteres.",
     }
+
+
+@pytest.mark.parametrize("kind, location, expected_type, message", [
+    ("blank_text", ("body", "title"), "blank_text", "El campo no puede contener solo espacios en blanco."),
+    ("literal_error", ("body", "channel"), "invalid_channel", "El canal debe ser email, sms o push."),
+    ("uuid_parsing", ("path", "notification_id"), "invalid_uuid", "Ingresá un identificador UUID válido."),
+    ("uuid_type", ("path", "notification_id"), "invalid_uuid", "Ingresá un identificador UUID válido."),
+    ("extra_forbidden", ("body", "user_id"), "unexpected_field", "Este campo no está permitido."),
+    ("null_not_allowed", ("body", "content"), "null_not_allowed", "Este campo no admite valores nulos."),
+    ("empty_update", ("body",), "empty_update", "Enviá al menos un campo para modificar."),
+])
+def test_notification_error_messages_are_safe(kind, location, expected_type, message):
+    error = format_validation_error({
+        "type": kind, "loc": location, "input": "private-notification-content",
+        "msg": "internal private-notification-content",
+        "ctx": {"reason": "private-notification-content"},
+    })
+    field = ".".join(str(part) for part in location[1:]) or None
+    assert error.model_dump() == {"type": expected_type, "field": field, "message": message}
+
+
+def test_literal_error_for_other_fields_keeps_generic_message():
+    error = format_validation_error({
+        "type": "literal_error", "loc": ("body", "other"), "input": "private-value",
+    })
+    assert error.model_dump() == {
+        "type": "literal_error", "field": "other", "message": "El valor ingresado no es válido.",
+    }

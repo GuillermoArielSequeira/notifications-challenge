@@ -24,6 +24,10 @@ def format_validation_error(error: dict[str, Any]) -> ValidationErrorItem:
         return ValidationErrorItem(
             type="invalid_email", field=field, message="Ingresá un email válido."
         )
+    if kind == "literal_error" and name == "channel":
+        return ValidationErrorItem(
+            type="invalid_channel", field=field, message="El canal debe ser email, sms o push."
+        )
     if kind in {"string_too_short", "string_too_long"}:
         too_short = kind == "string_too_short"
         limit = error["ctx"]["min_length" if too_short else "max_length"]
@@ -44,6 +48,12 @@ def format_validation_error(error: dict[str, Any]) -> ValidationErrorItem:
         "int_parsing": ("invalid_integer", "Ingresá un número entero válido."),
         "model_attributes_type": ("invalid_body", "El cuerpo debe ser un objeto JSON."),
         "model_type": ("invalid_body", "El cuerpo debe ser un objeto JSON."),
+        "blank_text": ("blank_text", "El campo no puede contener solo espacios en blanco."),
+        "uuid_parsing": ("invalid_uuid", "Ingresá un identificador UUID válido."),
+        "uuid_type": ("invalid_uuid", "Ingresá un identificador UUID válido."),
+        "extra_forbidden": ("unexpected_field", "Este campo no está permitido."),
+        "null_not_allowed": ("null_not_allowed", "Este campo no admite valores nulos."),
+        "empty_update": ("empty_update", "Enviá al menos un campo para modificar."),
     }
     code, message = messages.get(kind, (kind, "El valor ingresado no es válido."))
     # Never forward Pydantic's input, context, or raw message to the client.

@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from alembic import command
@@ -89,3 +90,19 @@ def auth_headers(db_test_client):
     response = db_test_client.post("/api/v1/auth/login", json=credentials)
     assert response.status_code == 200
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+@pytest.fixture
+def authenticated_user_factory(db_test_client):
+    def create_user(email: str):
+        credentials = {"email": email, "password": "secure-test-password"}
+        registration = db_test_client.post("/api/v1/auth/register", json=credentials)
+        assert registration.status_code == 201
+        login = db_test_client.post("/api/v1/auth/login", json=credentials)
+        assert login.status_code == 200
+        return {
+            "id": UUID(registration.json()["id"]),
+            "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},
+        }
+
+    return create_user
