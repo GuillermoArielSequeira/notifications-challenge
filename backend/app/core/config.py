@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL
 
@@ -22,6 +23,8 @@ class Settings(BaseSettings):
     postgres_port: int = 5433
     postgres_sslmode: str | None = None
     postgres_channel_binding: str | None = None
+    jwt_secret_key: SecretStr = Field(min_length=32)
+    jwt_access_token_expire_minutes: int = Field(default=30, gt=0, le=1440)
 
     model_config = SettingsConfigDict(
         env_file=ROOT_DIR / ".env",

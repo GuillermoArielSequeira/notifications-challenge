@@ -7,21 +7,21 @@
 
 A full-stack take-home challenge to build a notification management system for authenticated users.
 
-The application will support user authentication, notification management, and simulated delivery through multiple channels: Email, SMS, and Push Notifications.
+The application supports user authentication, notification management, and local simulated delivery through Email, SMS, and Push channels.
 
-**Current status:** Infrastructure and testing setup completed. Business features and frontend implementation are pending.
+**Estado actual del código:** infraestructura backend, registro, login JWT, acceso autenticado, CRUD de notificaciones propias y simulación local de entrega están implementados. No hay proveedor, comunicación de red ni comprobación de recepción real. El frontend sigue pendiente. Esta documentación describe el código del repositorio; no afirma la disponibilidad ni la versión de una URL pública.
 
-## Live Deployment
+## Referencias de despliegue históricas
 
-The backend API is deployed on Render, using a managed PostgreSQL database hosted on Neon.
+Las siguientes URL son referencias de la configuración de despliegue histórica. Su disponibilidad y versión no se verifican aquí; no se debe interpretar que incluyan la simulación local descrita en este documento.
 
-**Live URLs:**
+**URLs configuradas históricamente:**
 
 - [Backend API](https://notifications-challenge.onrender.com)
 - [Swagger Documentation](https://notifications-challenge.onrender.com/docs)
 - [Health Check](https://notifications-challenge.onrender.com/health)
 
-### Infrastructure
+### Configuración histórica
 
 | Component | Provider |
 |---|---|
@@ -30,9 +30,9 @@ The backend API is deployed on Render, using a managed PostgreSQL database hoste
 | CI | GitHub Actions |
 | Test Coverage | Coveralls |
 
-### Deployment Configuration
+### Configuración de despliegue en el repositorio
 
-The backend is deployed from the `master` branch using `backend/Dockerfile`.
+El repositorio contiene configuración para construir el backend desde `master` con `backend/Dockerfile`; esta documentación no verifica una ejecución desplegada.
 
 Database credentials and connection settings are configured through Render environment variables and are not committed to the repository.
 
@@ -50,13 +50,15 @@ POSTGRES_HOST=
 POSTGRES_PORT=5432
 POSTGRES_SSLMODE=require
 POSTGRES_CHANNEL_BINDING=require
+JWT_SECRET_KEY=<unique-random-secret-at-least-32-characters>
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
 ```
 
 ### Database Migrations
 
 Database schema changes are managed with Alembic.
 
-Migrations are not currently executed automatically during deployment and must be applied separately when required.
+`backend/start.sh` automatically runs `alembic upgrade head` before starting the API. Startup fails if migrations fail. Configure `JWT_SECRET_KEY` in Render before deploying authentication; no default signing key is provided.
 
 ### Free Tier Limitations
 
@@ -94,6 +96,9 @@ notifications-challenge/
 │   ├── app/
 │   │   ├── core/           # Configuration and database
 │   │   ├── routers/        # API endpoints
+│   │   ├── services/       # Casos de uso
+│   │   ├── repositories/   # Acceso a datos
+│   │   ├── models/         # Modelos SQLAlchemy
 │   │   ├── schemas/        # Pydantic schemas
 │   │   └── main.py         # FastAPI application
 │   ├── migrations/         # Alembic migrations
@@ -148,6 +153,8 @@ POSTGRES_PORT=5433
 
 Replace `your_local_password` with your own development password.
 
+Generate a signing secret with `openssl rand -hex 32` and set `JWT_SECRET_KEY` in the root `.env`. The key must contain at least 32 characters; use a different random key in each environment. `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` defaults to `30` (allowed range: 1–1440).
+
 The `.env` file is excluded from Git. Never commit real credentials.
 
 ### 3. Start the application
@@ -163,7 +170,9 @@ This command builds and starts:
 
 Docker Compose also waits for the database health check before starting the API.
 
-### 4. Apply database migrations
+### 4. Database migrations
+
+API startup applies migrations automatically. To apply them manually to the running development environment:
 
 ```bash
 docker compose exec api python -m alembic upgrade head
@@ -181,7 +190,131 @@ This applies the available Alembic migrations to the development database.
 | Ping | http://localhost:8000/api/v1/ping |
 | Database check | http://localhost:8000/api/v1/db-check |
 
-These are currently infrastructure and diagnostic endpoints, not the final business API.
+`/health`, `/docs`, and `/openapi.json` are public. `/`, `/api/v1/ping`, and `/api/v1/db-check` require a bearer token, as do the protected application routes.
+
+## Authentication
+
+Both authentication endpoints accept JSON. Email addresses are validated, trimmed, and stored lowercase; accounts treat email addresses as case-insensitive. Registration passwords must contain 8–128 characters and are stored as salted Argon2id hashes, never plaintext. Passwords are not trimmed or normalized.
+
+```bash
+# Register: 201 with id, email, created_at; 409 if email is already registered.
+curl -X POST http://localhost:8000/api/v1/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"user@example.com","password":"a-long-example-password"}'
+
+# Login: 200 with access_token, token_type (bearer), expires_in (seconds).
+curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"user@example.com","password":"a-long-example-password"}'
+
+# Supply the returned access_token to protected endpoints.
+curl http://localhost:8000/api/v1/users/me \
+  -H 'Authorization: Bearer <access_token>'
+```
+
+In Swagger UI, paste the token into **Authorize**. Missing, invalid, expired tokens and tokens for deleted/nonexistent users receive `401` with `WWW-Authenticate: Bearer`. Incorrect login credentials return the same generic error whether or not the email exists. Invalid request bodies return `422` without echoing input values.
+
+Access tokens are HS256-signed JWTs with required `sub`, `iat`, and `exp` claims. Use HTTPS outside local development. This initial scope does not include refresh tokens, logout/revocation, password recovery, email verification, roles, or rate limiting. Tokens remain valid until expiration unless the user is deleted or the signing key changes.
+
+### Validation errors
+
+Every `422` validation response uses a `detail` list with exactly three properties per error: a machine-readable `type`, the affected `field`, and a user-facing Spanish `message`. For example:
+
+```json
+{
+  "detail": [
+    {
+      "type": "invalid_email",
+      "field": "email",
+      "message": "Ingresá un email válido."
+    },
+    {
+      "type": "password_too_short",
+      "field": "password",
+      "message": "La contraseña debe tener al menos 8 caracteres."
+    }
+  ]
+}
+```
+
+Other codes include `password_too_long`, `required_field`, `invalid_type`, `invalid_json`, and `invalid_body`. Fields omit request-source prefixes such as `body`; nested fields retain their full path (for example, `users.0.email`). Errors affecting the whole request body use `"field": null`. Responses never include submitted values, internal validation context, or raw validator messages. Swagger documents this same response schema. Authentication errors (`401`) and duplicate-email errors (`409`) keep their existing format.
+
+## Notificaciones propias
+
+Las cuatro operaciones requieren `Authorization: Bearer <access_token>`. El propietario se obtiene del token; nunca se acepta desde el cuerpo de la solicitud. POST realiza una **simulación local síncrona** antes de guardar; no contacta proveedores, no usa red, no acredita recepción real y no crea estados públicos de entrega.
+
+| Método | Ruta | Respuesta correcta |
+|---|---|---|
+| POST | `/api/v1/notifications` | 201 con la notificación creada |
+| GET | `/api/v1/notifications` | 200 con todas las propias; `[]` si no hay |
+| PATCH | `/api/v1/notifications/{notification_id}` | 200 con la notificación modificada |
+| DELETE | `/api/v1/notifications/{notification_id}` | 204 sin cuerpo; borrado definitivo |
+
+La representación pública contiene únicamente `id` (UUID), `title`, `content` y `channel`:
+
+```json
+{
+  "id": "b24ac4b7-f8cb-4d33-aaf3-2d8e2a245938",
+  "title": "Recordatorio",
+  "content": "Revisar las notificaciones",
+  "channel": "email"
+}
+```
+
+### Creación, validación y aislamiento
+
+- Crear exige `title` de 1–200 caracteres, `content` de 1–5000, un único canal (`email`, `sms` o `push`, exactamente en minúsculas) y `recipient` como cadena estricta no vacía. Este es un **cambio incompatible**: los clientes existentes deben añadir `recipient`; no hay fallback al email de la cuenta.
+- `recipient` se usa solamente durante ese POST, no se guarda y no aparece en las respuestas POST, GET ni PATCH. Para `email`, se admite la sintaxis de registro hasta 254 caracteres y se normalizan espacios externos y minúsculas; para `sms`, se requiere `+` seguido de 8–15 dígitos ASCII, con primer dígito distinto de cero; para `push`, se requiere un token de 1–512 caracteres ASCII visibles, sin espacios ni controles.
+- En SMS, solo el `content` enviado se limita a 160 puntos de código Unicode; no se trunca ni se normaliza. Email y push mantienen el máximo general de 5000.
+- Los textos se conservan tal como se reciben, incluidos espacios significativos. Se rechazan textos vacíos o compuestos únicamente por espacios en blanco y valores que no sean cadenas.
+- Una creación válida valida el destino, prepara localmente el template o payload del canal y registra la simulación protegida antes de guardar. El registro técnico JSON contiene solo `event`, `channel`, `status`, `timestamp` UTC y `recipient`: email/push se registran como `[redacted]` y SMS deja solo sus últimos cuatro dígitos. No incluye título, contenido, template, payload, JWT ni errores internos; es un log técnico, no una auditoría durable ni prueba de recepción o de persistencia.
+- PATCH modifica solo los campos enviados y nunca acepta `recipient` ni reenvía. Los omitidos conservan su valor; enviar `null` o un objeto vacío se rechaza. Conserva el máximo general de 5000 incluso al cambiar a SMS o editar un SMS existente, porque no ejecuta envío.
+- No se admiten `id`, `user_id` ni propiedades desconocidas en creación o edición.
+- El listado no garantiza orden y nunca incluye recursos de otro usuario. No tiene filtros ni paginación.
+- UUID mal formado o entrada inválida: **422**, con `detail: [{type, field, message}]` y mensajes seguros en español. Los códigos adicionales incluyen `blank_text`, `invalid_channel`, `invalid_uuid`, `unexpected_field`, `null_not_allowed`, `empty_update`, `invalid_recipient_email`, `invalid_recipient_sms`, `invalid_recipient_push` y `sms_too_long`.
+- Si falla la simulación, su registro o una escritura reversible, POST devuelve **500** con `{"detail":"No se pudo completar la creación de la notificación."}` y no crea una fila nueva. Si el guardado ya se confirmó y falla una preparación posterior de la respuesta, devuelve el mismo 500 pero la fila confirmada puede existir; no se borra compensatoriamente ni se reintenta la simulación.
+- Token ausente, inválido o vencido: **401**, con `WWW-Authenticate: Bearer`.
+- Editar o eliminar una notificación ajena, inexistente o ya eliminada: el mismo **404** con `{"detail":"Notificación no encontrada."}`, sin revelar su existencia ni modificar datos.
+
+### Ejemplos locales
+
+Usá el token obtenido en el login y reemplazá `<notification_id>` por el UUID devuelto al crear:
+
+```bash
+# Crear email (destino ficticio)
+curl -X POST http://localhost:8000/api/v1/notifications \
+  -H 'Authorization: Bearer <access_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Recordatorio","content":"Revisar las notificaciones","channel":"email","recipient":"recipient@example.com"}'
+
+# Crear SMS (destino ficticio; el contenido no debe superar 160 caracteres)
+curl -X POST http://localhost:8000/api/v1/notifications \
+  -H 'Authorization: Bearer <access_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Código","content":"Tu código de prueba es 1234","channel":"sms","recipient":"+12345678901"}'
+
+# Crear push (token simulado, no es el JWT)
+curl -X POST http://localhost:8000/api/v1/notifications \
+  -H 'Authorization: Bearer <access_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Novedad","content":"Hay una actualización disponible","channel":"push","recipient":"device-token-demo"}'
+
+# Listar las propias
+curl http://localhost:8000/api/v1/notifications \
+  -H 'Authorization: Bearer <access_token>'
+
+# Cambiar únicamente el título
+curl -X PATCH 'http://localhost:8000/api/v1/notifications/<notification_id>' \
+  -H 'Authorization: Bearer <access_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Nuevo recordatorio"}'
+
+# Eliminar definitivamente
+curl -X DELETE 'http://localhost:8000/api/v1/notifications/<notification_id>' \
+  -H 'Authorization: Bearer <access_token>'
+```
+
+Swagger (`/docs`) documenta autenticación, contratos y respuestas, incluido `recipient` como `writeOnly` exclusivo de POST. No hay endpoint de consulta individual, proveedor o envío real, historial/auditoría consultable, programación, estados, recuperación de eliminadas ni frontend en este alcance.
 
 ## Database
 
@@ -218,7 +351,14 @@ Migration generation requires the SQLAlchemy models to be imported into Alembic'
 
 ## Testing
 
-Tests are implemented with pytest and FastAPI's TestClient.
+Tests are implemented with pytest and FastAPI's TestClient. The suite covers registration, password hashing, login, JWT validation, route protection, database connectivity, and migration/model consistency.
+
+También cubre contratos de notificaciones, simulación por canal, registros protegidos, servicio con repositorio sustituido, persistencia y rollback en PostgreSQL real, CRUD HTTP, validación sin cambios parciales, aislamiento entre dos propietarios, tokens inválidos y OpenAPI. Para verificar la funcionalidad desde la raíz:
+
+```bash
+docker compose -f docker-compose.test.yml run --rm --build tests \
+  python -m pytest -v tests/test_notifications.py tests/test_notification_service.py tests/test_notification_schemas.py
+```
 
 The test environment uses a separate PostgreSQL container to avoid modifying development data.
 
@@ -230,11 +370,23 @@ The test environment uses a separate PostgreSQL container to avoid modifying dev
 
 This command builds the testing image, starts the testing database when required, executes pytest, and generates a coverage report.
 
+To run one test, rebuilding the image to include source changes:
+
+```bash
+docker compose -f docker-compose.test.yml run --rm --build tests \
+  python -m pytest -v tests/test_auth.py::test_login_and_me
+```
+
+The test fixture applies Alembic migrations to `notifications_test`, then uses an outer transaction and savepoints to roll back each database-backed test even when application code commits. It accepts only the local test database (hosts `localhost`, `127.0.0.1`, `::1`, or Docker's `db_test`); it never migrates the development database. Docker tests use a test-only signing key and do not require the root `.env`.
+
 ### Run tests locally
 
 Python 3.13 and the development dependencies must be installed.
 
 ```bash
+# From the repository root:
+docker compose -f docker-compose.test.yml up -d --wait db_test
+
 cd backend
 
 python3.13 -m venv .venv
@@ -246,6 +398,8 @@ python -m pytest -v
 
 When tests are executed locally, the PostgreSQL testing container must be available on `localhost:5434`.
 
+The fixtures supply test-only configuration before importing the application, so local tests also do not require a development `.env`. `TEST_DATABASE_URL` can override the test connection but must still target the isolated local `notifications_test` database. Security-only tests can run without PostgreSQL: `python -m pytest -v tests/test_security.py` from `backend/`.
+
 ### Test Coverage
 
 Coverage is generated automatically when running tests through Docker.
@@ -256,7 +410,7 @@ The report is saved to:
 coverage/coverage.xml
 ```
 
-The initial test suite covers basic API health checks and database connectivity. Business logic tests will be added as features are implemented.
+Database data is rolled back between tests; migrations remain applied in the test database.
 
 ## Continuous Integration
 
@@ -274,7 +428,7 @@ Workflow configuration: `.github/workflows/backend-ci.yml`.
 
 ## Architecture
 
-The backend will follow a modular, layered architecture inspired by Clean Architecture.
+Authentication follows a layered architecture: `app/routers/auth.py` handles HTTP, `app/services/auth.py` orchestrates registration/login, `app/repositories/users.py` handles persistence, and `app/models/user.py` defines the user table. Security helpers and the `get_current_user` dependency live in `app/core/`. Future features should follow the same separation.
 
 ```text
 Controller
@@ -288,7 +442,7 @@ SQLAlchemy Models
 PostgreSQL
 ```
 
-**Planned responsibilities:**
+**Layer responsibilities:**
 
 - **Controller:** Handle HTTP requests, authentication dependencies, input validation, and responses.
 - **Service:** Implement application use cases and business rules.
@@ -296,15 +450,9 @@ PostgreSQL
 - **Models:** Define database entities and relationships using SQLAlchemy.
 - **Schemas:** Define request and response contracts using Pydantic.
 
-The implementation will use dependency injection to reduce coupling and improve testability.
+Database sessions, the authentication service, and authenticated users are provided via FastAPI dependency injection. `app/core/dependencies.py` assembles `AuthService` through `get_auth_service`; auth endpoints receive `AuthServiceDependency` instead of constructing services or repositories. Tests can override `get_auth_service` through `app.dependency_overrides` to exercise HTTP behavior without a database. In `app/main.py`, public auth routes are mounted separately from `protected_api`; attach future protected routers to `protected_api` so they inherit authentication.
 
-### Notification Delivery Strategy (Planned)
-
-The notification system will use the Strategy Pattern to support multiple delivery channels.
-
-Each channel will have its own implementation for validation, formatting, and simulated delivery.
-
-The goal is to make new channels extensible without changing the notification orchestration logic.
+Notificaciones sigue la misma separación: `app/routers/notifications.py` recibe `CurrentUser` y `NotificationServiceDependency`; `get_notification_service` construye el servicio y el repositorio con la sesión inyectada. En POST, `get_notification_sender` compone explícitamente las estrategias email/SMS/push y el registrador protegido; el servicio simula una vez antes de pedir la escritura al repositorio. Cada Strategy encapsula la validación, preparación y protección de su canal; el sender común selecciona la estrategia registrada sin fallbacks. El servicio limita los campos editables y exige una búsqueda conjunta por UUID y propietario antes de editar o borrar; el repositorio ejecuta SQL, confirma una vez por escritura y revierte errores de SQLAlchemy. La tabla usa `VARCHAR` con CHECK para los canales e índice por propietario, sin ENUM nativo ni destinatarios o estados almacenados. No se incorporaron dependencias nuevas.
 
 ## Technical Decisions
 
@@ -332,9 +480,9 @@ The goal is to make new channels extensible without changing the notification or
 - [x] Docker development and testing environments
 - [x] GitHub Actions and Coveralls
 - [x] Deployment
-- [ ] User registration and authentication
-- [ ] Notification CRUD
-- [ ] Email, SMS, and Push delivery strategies
+- [x] User registration and authentication
+- [x] Notification CRUD
+- [x] Local simulated Email, SMS, and Push delivery strategies
 - [ ] React frontend
 
 ## Development Commands

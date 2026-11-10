@@ -5,6 +5,7 @@ from alembic import context
 from app.core.base import Base
 from app.core.config import settings
 from app.core.database import engine
+from app.models import Notification, User  # noqa: F401 -- register models in Base.metadata
 
 
 config = context.config
@@ -43,15 +44,23 @@ def run_migrations_online():
     directamente a PostgreSQL.
     """
 
-    with engine.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            compare_type=True,
-        )
+    # Tests supply their own connection, never the application/development DB.
+    connection = config.attributes.get("connection")
+    if connection is not None:
+        configure_connection(connection)
+    else:
+        with engine.connect() as connection:
+            configure_connection(connection)
 
-        with context.begin_transaction():
-            context.run_migrations()
+
+def configure_connection(connection):
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_type=True,
+    )
+    with context.begin_transaction():
+        context.run_migrations()
 
 
 if context.is_offline_mode():

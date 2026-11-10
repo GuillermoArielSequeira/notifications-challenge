@@ -22,3 +22,11 @@ dist/
 
 # Coverage reports
 /coverage/
+
+#IA
+specs/
+docs/
+.agents/
+.opencode/
+AGENTS.md
+MEMORY.md
