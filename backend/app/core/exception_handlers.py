@@ -54,6 +54,21 @@ def format_validation_error(error: dict[str, Any]) -> ValidationErrorItem:
         "extra_forbidden": ("unexpected_field", "Este campo no está permitido."),
         "null_not_allowed": ("null_not_allowed", "Este campo no admite valores nulos."),
         "empty_update": ("empty_update", "Enviá al menos un campo para modificar."),
+        "invalid_recipient_email": (
+            "invalid_recipient_email",
+            "Ingresá un email destinatario válido de hasta 254 caracteres.",
+        ),
+        "invalid_recipient_sms": (
+            "invalid_recipient_sms",
+            "Ingresá un número con + y entre 8 y 15 dígitos, sin cero inicial.",
+        ),
+        "invalid_recipient_push": (
+            "invalid_recipient_push",
+            "Ingresá un token de 1 a 512 caracteres ASCII visibles, sin espacios.",
+        ),
+        "sms_too_long": (
+            "sms_too_long", "El contenido SMS debe tener como máximo 160 caracteres."
+        ),
     }
     code, message = messages.get(kind, (kind, "El valor ingresado no es válido."))
     # Never forward Pydantic's input, context, or raw message to the client.

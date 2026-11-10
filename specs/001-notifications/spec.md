@@ -1,6 +1,8 @@
 # Spec 001 — Gestión de notificaciones propias
 
-Estado: aprobada
+Estado: implementada
+
+Cierre: el 2026-11-08 el usuario dio conformidad expresa para cerrar 001 y comenzar la fase de spec de 002, según lo comunicado por el coordinador. La evidencia técnica histórica está en [tasks.md](tasks.md): `./up_test.sh`, 426 tests y 99% de cobertura global el 2026-11-08. Este cierre documental no ejecutó nuevamente esas verificaciones ni incorpora envíos al alcance de 001.
 
 ## Contexto y objetivo
 Permitir que un usuario autenticado cree, consulte, modifique y elimine sus propias notificaciones. Esta funcionalidad almacena las notificaciones, pero no las envía.

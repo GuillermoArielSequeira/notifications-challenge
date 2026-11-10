@@ -165,6 +165,10 @@ def test_length_message_for_other_fields():
     ("extra_forbidden", ("body", "user_id"), "unexpected_field", "Este campo no está permitido."),
     ("null_not_allowed", ("body", "content"), "null_not_allowed", "Este campo no admite valores nulos."),
     ("empty_update", ("body",), "empty_update", "Enviá al menos un campo para modificar."),
+    ("invalid_recipient_email", ("body", "recipient"), "invalid_recipient_email", "Ingresá un email destinatario válido de hasta 254 caracteres."),
+    ("invalid_recipient_sms", ("body", "recipient"), "invalid_recipient_sms", "Ingresá un número con + y entre 8 y 15 dígitos, sin cero inicial."),
+    ("invalid_recipient_push", ("body", "recipient"), "invalid_recipient_push", "Ingresá un token de 1 a 512 caracteres ASCII visibles, sin espacios."),
+    ("sms_too_long", ("body", "content"), "sms_too_long", "El contenido SMS debe tener como máximo 160 caracteres."),
 ])
 def test_notification_error_messages_are_safe(kind, location, expected_type, message):
     error = format_validation_error({

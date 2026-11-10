@@ -11,6 +11,11 @@ from app.models.user import User
 from app.repositories.notifications import NotificationRepository
 from app.repositories.users import UserRepository
 from app.services.auth import AuthService
+from app.services.delivery.email import EmailDeliveryStrategy
+from app.services.delivery.logging import DeliveryRecorder, create_delivery_logger
+from app.services.delivery.push import PushDeliveryStrategy
+from app.services.delivery.sender import NotificationSender
+from app.services.delivery.sms import SmsDeliveryStrategy
 from app.services.notifications import NotificationService
 
 
@@ -25,8 +30,23 @@ def get_auth_service(db: DatabaseSession) -> AuthService:
 AuthServiceDependency = Annotated[AuthService, Depends(get_auth_service)]
 
 
-def get_notification_service(db: DatabaseSession) -> NotificationService:
-    return NotificationService(NotificationRepository(db))
+def get_notification_sender() -> NotificationSender:
+    strategies = {
+        "email": EmailDeliveryStrategy(),
+        "sms": SmsDeliveryStrategy(),
+        "push": PushDeliveryStrategy(),
+    }
+    recorder = DeliveryRecorder(create_delivery_logger())
+    return NotificationSender(strategies, recorder)
+
+
+NotificationSenderDependency = Annotated[NotificationSender, Depends(get_notification_sender)]
+
+
+def get_notification_service(
+    db: DatabaseSession, sender: NotificationSenderDependency
+) -> NotificationService:
+    return NotificationService(NotificationRepository(db), sender)
 
 
 NotificationServiceDependency = Annotated[NotificationService, Depends(get_notification_service)]

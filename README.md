@@ -7,21 +7,21 @@
 
 A full-stack take-home challenge to build a notification management system for authenticated users.
 
-The application will support user authentication, notification management, and simulated delivery through multiple channels: Email, SMS, and Push Notifications.
+The application supports user authentication, notification management, and local simulated delivery through Email, SMS, and Push channels.
 
-**Estado actual del código:** infraestructura backend, registro, login JWT, acceso autenticado y CRUD de notificaciones propias implementados. Las estrategias de envío y el frontend siguen pendientes. La disponibilidad en las URLs públicas depende de la versión desplegada.
+**Estado actual del código:** infraestructura backend, registro, login JWT, acceso autenticado, CRUD de notificaciones propias y simulación local de entrega están implementados. No hay proveedor, comunicación de red ni comprobación de recepción real. El frontend sigue pendiente. Esta documentación describe el código del repositorio; no afirma la disponibilidad ni la versión de una URL pública.
 
-## Live Deployment
+## Referencias de despliegue históricas
 
-The backend API is deployed on Render, using a managed PostgreSQL database hosted on Neon.
+Las siguientes URL son referencias de la configuración de despliegue histórica. Su disponibilidad y versión no se verifican aquí; no se debe interpretar que incluyan la simulación local descrita en este documento.
 
-**Live URLs:**
+**URLs configuradas históricamente:**
 
 - [Backend API](https://notifications-challenge.onrender.com)
 - [Swagger Documentation](https://notifications-challenge.onrender.com/docs)
 - [Health Check](https://notifications-challenge.onrender.com/health)
 
-### Infrastructure
+### Configuración histórica
 
 | Component | Provider |
 |---|---|
@@ -30,9 +30,9 @@ The backend API is deployed on Render, using a managed PostgreSQL database hoste
 | CI | GitHub Actions |
 | Test Coverage | Coveralls |
 
-### Deployment Configuration
+### Configuración de despliegue en el repositorio
 
-The backend is deployed from the `master` branch using `backend/Dockerfile`.
+El repositorio contiene configuración para construir el backend desde `master` con `backend/Dockerfile`; esta documentación no verifica una ejecución desplegada.
 
 Database credentials and connection settings are configured through Render environment variables and are not committed to the repository.
 
@@ -241,7 +241,7 @@ Other codes include `password_too_long`, `required_field`, `invalid_type`, `inva
 
 ## Notificaciones propias
 
-Las cuatro operaciones requieren `Authorization: Bearer <access_token>`. El propietario se obtiene del token; nunca se acepta desde el cuerpo de la solicitud. Esta funcionalidad almacena notificaciones, **no las envía**, ni siquiera de forma simulada.
+Las cuatro operaciones requieren `Authorization: Bearer <access_token>`. El propietario se obtiene del token; nunca se acepta desde el cuerpo de la solicitud. POST realiza una **simulación local síncrona** antes de guardar; no contacta proveedores, no usa red, no acredita recepción real y no crea estados públicos de entrega.
 
 | Método | Ruta | Respuesta correcta |
 |---|---|---|
@@ -261,14 +261,18 @@ La representación pública contiene únicamente `id` (UUID), `title`, `content`
 }
 ```
 
-### Validación y aislamiento
+### Creación, validación y aislamiento
 
-- Crear exige `title` de 1–200 caracteres, `content` de 1–5000 y un único canal: `email`, `sms` o `push`, exactamente en minúsculas.
+- Crear exige `title` de 1–200 caracteres, `content` de 1–5000, un único canal (`email`, `sms` o `push`, exactamente en minúsculas) y `recipient` como cadena estricta no vacía. Este es un **cambio incompatible**: los clientes existentes deben añadir `recipient`; no hay fallback al email de la cuenta.
+- `recipient` se usa solamente durante ese POST, no se guarda y no aparece en las respuestas POST, GET ni PATCH. Para `email`, se admite la sintaxis de registro hasta 254 caracteres y se normalizan espacios externos y minúsculas; para `sms`, se requiere `+` seguido de 8–15 dígitos ASCII, con primer dígito distinto de cero; para `push`, se requiere un token de 1–512 caracteres ASCII visibles, sin espacios ni controles.
+- En SMS, solo el `content` enviado se limita a 160 puntos de código Unicode; no se trunca ni se normaliza. Email y push mantienen el máximo general de 5000.
 - Los textos se conservan tal como se reciben, incluidos espacios significativos. Se rechazan textos vacíos o compuestos únicamente por espacios en blanco y valores que no sean cadenas.
-- PATCH modifica solo los campos enviados. Los omitidos conservan su valor; enviar `null` o un objeto vacío se rechaza. Se validan todos los cambios antes de persistir, sin actualizaciones parciales ante errores.
+- Una creación válida valida el destino, prepara localmente el template o payload del canal y registra la simulación protegida antes de guardar. El registro técnico JSON contiene solo `event`, `channel`, `status`, `timestamp` UTC y `recipient`: email/push se registran como `[redacted]` y SMS deja solo sus últimos cuatro dígitos. No incluye título, contenido, template, payload, JWT ni errores internos; es un log técnico, no una auditoría durable ni prueba de recepción o de persistencia.
+- PATCH modifica solo los campos enviados y nunca acepta `recipient` ni reenvía. Los omitidos conservan su valor; enviar `null` o un objeto vacío se rechaza. Conserva el máximo general de 5000 incluso al cambiar a SMS o editar un SMS existente, porque no ejecuta envío.
 - No se admiten `id`, `user_id` ni propiedades desconocidas en creación o edición.
 - El listado no garantiza orden y nunca incluye recursos de otro usuario. No tiene filtros ni paginación.
-- UUID mal formado o entrada inválida: **422**, con `detail: [{type, field, message}]` y mensajes seguros en español. Los códigos adicionales incluyen `blank_text`, `invalid_channel`, `invalid_uuid`, `unexpected_field`, `null_not_allowed` y `empty_update`.
+- UUID mal formado o entrada inválida: **422**, con `detail: [{type, field, message}]` y mensajes seguros en español. Los códigos adicionales incluyen `blank_text`, `invalid_channel`, `invalid_uuid`, `unexpected_field`, `null_not_allowed`, `empty_update`, `invalid_recipient_email`, `invalid_recipient_sms`, `invalid_recipient_push` y `sms_too_long`.
+- Si falla la simulación, su registro o una escritura reversible, POST devuelve **500** con `{"detail":"No se pudo completar la creación de la notificación."}` y no crea una fila nueva. Si el guardado ya se confirmó y falla una preparación posterior de la respuesta, devuelve el mismo 500 pero la fila confirmada puede existir; no se borra compensatoriamente ni se reintenta la simulación.
 - Token ausente, inválido o vencido: **401**, con `WWW-Authenticate: Bearer`.
 - Editar o eliminar una notificación ajena, inexistente o ya eliminada: el mismo **404** con `{"detail":"Notificación no encontrada."}`, sin revelar su existencia ni modificar datos.
 
@@ -277,11 +281,23 @@ La representación pública contiene únicamente `id` (UUID), `title`, `content`
 Usá el token obtenido en el login y reemplazá `<notification_id>` por el UUID devuelto al crear:
 
 ```bash
-# Crear
+# Crear email (destino ficticio)
 curl -X POST http://localhost:8000/api/v1/notifications \
   -H 'Authorization: Bearer <access_token>' \
   -H 'Content-Type: application/json' \
-  -d '{"title":"Recordatorio","content":"Revisar las notificaciones","channel":"email"}'
+  -d '{"title":"Recordatorio","content":"Revisar las notificaciones","channel":"email","recipient":"recipient@example.com"}'
+
+# Crear SMS (destino ficticio; el contenido no debe superar 160 caracteres)
+curl -X POST http://localhost:8000/api/v1/notifications \
+  -H 'Authorization: Bearer <access_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Código","content":"Tu código de prueba es 1234","channel":"sms","recipient":"+12345678901"}'
+
+# Crear push (token simulado, no es el JWT)
+curl -X POST http://localhost:8000/api/v1/notifications \
+  -H 'Authorization: Bearer <access_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Novedad","content":"Hay una actualización disponible","channel":"push","recipient":"device-token-demo"}'
 
 # Listar las propias
 curl http://localhost:8000/api/v1/notifications \
@@ -298,7 +314,7 @@ curl -X DELETE 'http://localhost:8000/api/v1/notifications/<notification_id>' \
   -H 'Authorization: Bearer <access_token>'
 ```
 
-Swagger (`/docs`) documenta autenticación, contratos y respuestas. No hay endpoint de consulta individual, envíos, destinatarios, programación, estados, recuperación de eliminadas ni frontend en este alcance.
+Swagger (`/docs`) documenta autenticación, contratos y respuestas, incluido `recipient` como `writeOnly` exclusivo de POST. No hay endpoint de consulta individual, proveedor o envío real, historial/auditoría consultable, programación, estados, recuperación de eliminadas ni frontend en este alcance.
 
 ## Database
 
@@ -337,7 +353,7 @@ Migration generation requires the SQLAlchemy models to be imported into Alembic'
 
 Tests are implemented with pytest and FastAPI's TestClient. The suite covers registration, password hashing, login, JWT validation, route protection, database connectivity, and migration/model consistency.
 
-También cubre contratos de notificaciones, servicio con repositorio sustituido, persistencia y rollback en PostgreSQL real, CRUD HTTP, validación sin cambios parciales, aislamiento entre dos propietarios, tokens inválidos y OpenAPI. Para verificar la funcionalidad desde la raíz:
+También cubre contratos de notificaciones, simulación por canal, registros protegidos, servicio con repositorio sustituido, persistencia y rollback en PostgreSQL real, CRUD HTTP, validación sin cambios parciales, aislamiento entre dos propietarios, tokens inválidos y OpenAPI. Para verificar la funcionalidad desde la raíz:
 
 ```bash
 docker compose -f docker-compose.test.yml run --rm --build tests \
@@ -436,15 +452,7 @@ PostgreSQL
 
 Database sessions, the authentication service, and authenticated users are provided via FastAPI dependency injection. `app/core/dependencies.py` assembles `AuthService` through `get_auth_service`; auth endpoints receive `AuthServiceDependency` instead of constructing services or repositories. Tests can override `get_auth_service` through `app.dependency_overrides` to exercise HTTP behavior without a database. In `app/main.py`, public auth routes are mounted separately from `protected_api`; attach future protected routers to `protected_api` so they inherit authentication.
 
-Notificaciones sigue la misma separación: `app/routers/notifications.py` recibe `CurrentUser` y `NotificationServiceDependency`; `get_notification_service` construye el servicio y el repositorio con la sesión inyectada. El servicio limita los campos editables y exige una búsqueda conjunta por UUID y propietario antes de editar o borrar; el repositorio ejecuta SQL, confirma una vez por escritura y revierte errores de SQLAlchemy. La tabla usa `VARCHAR` con CHECK para los canales e índice por propietario, sin ENUM nativo. No se incorporaron dependencias nuevas.
-
-### Notification Delivery Strategy (Planned)
-
-The notification system will use the Strategy Pattern to support multiple delivery channels.
-
-Each channel will have its own implementation for validation, formatting, and simulated delivery.
-
-The goal is to make new channels extensible without changing the notification orchestration logic.
+Notificaciones sigue la misma separación: `app/routers/notifications.py` recibe `CurrentUser` y `NotificationServiceDependency`; `get_notification_service` construye el servicio y el repositorio con la sesión inyectada. En POST, `get_notification_sender` compone explícitamente las estrategias email/SMS/push y el registrador protegido; el servicio simula una vez antes de pedir la escritura al repositorio. Cada Strategy encapsula la validación, preparación y protección de su canal; el sender común selecciona la estrategia registrada sin fallbacks. El servicio limita los campos editables y exige una búsqueda conjunta por UUID y propietario antes de editar o borrar; el repositorio ejecuta SQL, confirma una vez por escritura y revierte errores de SQLAlchemy. La tabla usa `VARCHAR` con CHECK para los canales e índice por propietario, sin ENUM nativo ni destinatarios o estados almacenados. No se incorporaron dependencias nuevas.
 
 ## Technical Decisions
 
@@ -474,7 +482,7 @@ The goal is to make new channels extensible without changing the notification or
 - [x] Deployment
 - [x] User registration and authentication
 - [x] Notification CRUD
-- [ ] Email, SMS, and Push delivery strategies
+- [x] Local simulated Email, SMS, and Push delivery strategies
 - [ ] React frontend
 
 ## Development Commands

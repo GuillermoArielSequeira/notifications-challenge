@@ -20,6 +20,21 @@ NotificationContent = Annotated[
     str, Field(strict=True, min_length=1, max_length=5000), AfterValidator(reject_blank_text)
 ]
 NotificationChannel = Literal["email", "sms", "push"]
+NotificationRecipient = Annotated[
+    str,
+    Field(
+        strict=True,
+        min_length=1,
+        repr=False,
+        json_schema_extra={"writeOnly": True},
+        description=(
+            "Destino efímero para la simulación local. El email es válido hasta 254 "
+            "caracteres y normaliza espacios externos y minúsculas; SMS usa + y 8 a 15 "
+            "dígitos ASCII sin cero inicial; push usa un token ASCII visible de 1 a 512 "
+            "caracteres. El contenido SMS no puede superar 160 caracteres."
+        ),
+    ),
+]
 
 
 class NotificationCreateRequest(BaseModel):
@@ -28,6 +43,7 @@ class NotificationCreateRequest(BaseModel):
     title: NotificationTitle
     content: NotificationContent
     channel: NotificationChannel
+    recipient: NotificationRecipient
 
 
 def describe_update_schema(schema: dict[str, Any]) -> None:

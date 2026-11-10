@@ -1,5 +1,8 @@
+import io
+import json
+import logging
 from datetime import datetime, timedelta, timezone
-from unittest.mock import create_autospec, patch
+from unittest.mock import Mock, call, create_autospec, patch
 from uuid import UUID, uuid4
 
 import jwt
@@ -11,11 +14,17 @@ from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from app.core.base import Base
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.dependencies import get_current_user, get_notification_service
+from app.core.dependencies import get_current_user, get_notification_sender, get_notification_service
 from app.core.security import create_access_token
 from app.main import app
 from app.models import User
+from app.repositories.notifications import NotificationRepository
 from app.schemas.notification import NotificationResponse
+from app.services.delivery.email import EmailDeliveryStrategy
+from app.services.delivery.logging import DeliveryLogHandler, DeliveryRecorder
+from app.services.delivery.push import PushDeliveryStrategy
+from app.services.delivery.sender import DeliveryExecutionError, NotificationSender
+from app.services.delivery.sms import SmsDeliveryStrategy
 from app.services.notifications import NotificationNotFoundError, NotificationService
 
 
@@ -357,6 +366,15 @@ def test_repository_failed_delete_rolls_back_and_session_recovers(
 
 NOTIFICATION_URL = "/api/v1/notifications"
 VALID_NOTIFICATION = {"title": "Aviso", "content": "Contenido", "channel": "email"}
+RECIPIENTS = {"email": "recipient@example.com", "sms": "+12345678", "push": "device-token"}
+
+
+def create_payload(values: dict[str, object]) -> dict[str, object]:
+    channel = values.get("channel")
+    recipient = RECIPIENTS.get(channel, RECIPIENTS["email"]) if isinstance(channel, str) else RECIPIENTS["email"]
+    return {**values, "recipient": recipient}
+
+
 INVALID_NOTIFICATION_FIELDS = [
     (field, value)
     for field in ("title", "content")
@@ -389,8 +407,12 @@ def test_api_create_persists_public_values_and_authenticated_owner(
     db_test_client, db_session, notification_model, authenticated_user_factory, channel, title, content
 ):
     user = authenticated_user_factory("creator@example.com")
+    if channel == "sms" and len(content) > 160:
+        content = content[:160]
     values = {"title": title, "content": content, "channel": channel}
-    response = db_test_client.post(NOTIFICATION_URL, headers=user["headers"], json=values)
+    response = db_test_client.post(
+        NOTIFICATION_URL, headers=user["headers"], json=create_payload(values)
+    )
     assert response.status_code == 201
     data = response.json()
     assert set(data) == {"id", "title", "content", "channel"}
@@ -413,7 +435,9 @@ def test_api_lists_empty_then_all_and_only_own_notifications(db_test_client, not
         expected[user["id"]] = []
         for channel in ("email", "sms", "push"):
             response = db_test_client.post(
-                NOTIFICATION_URL, headers=user["headers"], json={**VALID_NOTIFICATION, "channel": channel}
+                NOTIFICATION_URL,
+                headers=user["headers"],
+                json=create_payload({**VALID_NOTIFICATION, "channel": channel}),
             )
             assert response.status_code == 201
             expected[user["id"]].append(response.json())
@@ -434,7 +458,8 @@ def test_api_create_rejects_invalid_values_without_persisting(
     db_test_client, db_session, notification_model, auth_headers, field, value
 ):
     response = db_test_client.post(
-        NOTIFICATION_URL, headers=auth_headers, json={**VALID_NOTIFICATION, field: value}
+        NOTIFICATION_URL, headers=auth_headers,
+        json=create_payload({**VALID_NOTIFICATION, field: value})
     )
     assert_safe_validation_response(response)
     assert any(error["field"] == field for error in response.json()["detail"])
@@ -442,9 +467,9 @@ def test_api_create_rejects_invalid_values_without_persisting(
     assert "Contenido" not in response.text
 
 
-@pytest.mark.parametrize("field", ["title", "content", "channel"])
+@pytest.mark.parametrize("field", ["title", "content", "channel", "recipient"])
 def test_api_create_requires_all_fields(db_test_client, db_session, notification_model, auth_headers, field):
-    values = {name: value for name, value in VALID_NOTIFICATION.items() if name != field}
+    values = {name: value for name, value in create_payload(VALID_NOTIFICATION).items() if name != field}
     response = db_test_client.post(NOTIFICATION_URL, headers=auth_headers, json=values)
     assert_safe_validation_response(response)
     assert response.json()["detail"] == [{
@@ -460,7 +485,7 @@ def test_api_create_rejects_identity_owner_and_unknown_fields(
     first, second = notification_users
     response = db_test_client.post(
         NOTIFICATION_URL, headers=first["headers"],
-        json={**VALID_NOTIFICATION, field: str(second["id"])},
+        json=create_payload({**VALID_NOTIFICATION, field: str(second["id"])}),
     )
     assert_safe_validation_response(response)
     assert response.json()["detail"] == [{
@@ -470,16 +495,73 @@ def test_api_create_rejects_identity_owner_and_unknown_fields(
     assert db_session.scalars(select(notification_model)).all() == []
 
 
+@pytest.mark.parametrize("value, expected", [
+    (None, {"type": "invalid_type", "field": "recipient", "message": "Ingresá un texto válido."}),
+    (42, {"type": "invalid_type", "field": "recipient", "message": "Ingresá un texto válido."}),
+    ("", {"type": "string_too_short", "field": "recipient", "message": "El campo debe tener al menos 1 carácter."}),
+    ("not-an-email", {
+        "type": "invalid_recipient_email", "field": "recipient",
+        "message": "Ingresá un email destinatario válido de hasta 254 caracteres.",
+    }),
+])
+def test_api_create_rejects_invalid_recipient_safely_without_persisting(
+    db_test_client, db_session, notification_model, auth_headers, value, expected
+):
+    response = db_test_client.post(
+        NOTIFICATION_URL, headers=auth_headers, json={**VALID_NOTIFICATION, "recipient": value}
+    )
+    assert response.status_code == 422
+    assert response.json() == {"detail": [expected]}
+    assert "not-an-email" not in response.text
+    assert db_session.scalars(select(notification_model)).all() == []
+
+
+@pytest.mark.parametrize("channel, recipient, content, expected", [
+    ("sms", "+02345678", "Contenido", {
+        "type": "invalid_recipient_sms", "field": "recipient",
+        "message": "Ingresá un número con + y entre 8 y 15 dígitos, sin cero inicial.",
+    }),
+    ("push", "with space", "Contenido", {
+        "type": "invalid_recipient_push", "field": "recipient",
+        "message": "Ingresá un token de 1 a 512 caracteres ASCII visibles, sin espacios.",
+    }),
+    ("sms", "+12345678", "x" * 161, {
+        "type": "sms_too_long", "field": "content",
+        "message": "El contenido SMS debe tener como máximo 160 caracteres.",
+    }),
+])
+def test_api_create_rejects_channel_delivery_validation_safely_without_persisting(
+    db_test_client, db_session, notification_model, auth_headers, channel, recipient, content, expected
+):
+    response = db_test_client.post(NOTIFICATION_URL, headers=auth_headers, json={
+        "title": "Aviso", "content": content, "channel": channel, "recipient": recipient,
+    })
+    assert response.status_code == 422
+    assert response.json() == {"detail": [expected]}
+    assert db_session.scalars(select(notification_model)).all() == []
+
+
 @pytest.mark.parametrize("method", ["post", "get"])
 @pytest.mark.parametrize("authorization", [None, "Bearer invalid", "Basic abc"])
 def test_api_create_and_list_require_valid_authentication(
     db_test_client, db_session, notification_model, method, authorization
 ):
     headers = {"Authorization": authorization} if authorization else {}
-    arguments = {"json": VALID_NOTIFICATION} if method == "post" else {}
+    arguments = {"json": create_payload(VALID_NOTIFICATION)} if method == "post" else {}
     response = getattr(db_test_client, method)(NOTIFICATION_URL, headers=headers, **arguments)
     assert response.status_code == 401
     assert response.headers["www-authenticate"] == "Bearer"
+    assert db_session.scalars(select(notification_model)).all() == []
+
+
+def test_api_create_with_valid_body_without_auth_never_simulates_or_persists(
+    db_test_client, db_session, notification_model, monkeypatch
+):
+    sender = create_autospec(NotificationSender, instance=True)
+    monkeypatch.setitem(app.dependency_overrides, get_notification_sender, lambda: sender)
+    response = db_test_client.post(NOTIFICATION_URL, json=create_payload(VALID_NOTIFICATION))
+    assert response.status_code == 401
+    sender.simulate.assert_not_called()
     assert db_session.scalars(select(notification_model)).all() == []
 
 
@@ -504,10 +586,27 @@ def notification_service_client(monkeypatch, notification_model):
 
 def test_api_create_uses_injected_service(notification_service_client):
     client, service, user, notification = notification_service_client
-    response = client.post(NOTIFICATION_URL, json=VALID_NOTIFICATION)
+    response = client.post(NOTIFICATION_URL, json=create_payload(VALID_NOTIFICATION))
     assert response.status_code == 201
     assert response.json() == {"id": str(notification.id), **VALID_NOTIFICATION}
-    service.create.assert_called_once_with(user.id, **VALID_NOTIFICATION)
+    service.create.assert_called_once_with(user.id, **VALID_NOTIFICATION, recipient=RECIPIENTS["email"])
+
+
+def test_api_create_maps_delivery_execution_failure_to_safe_500(notification_service_client):
+    client, service, _, _ = notification_service_client
+    service.create.side_effect = DeliveryExecutionError()
+    response = client.post(NOTIFICATION_URL, json=create_payload(VALID_NOTIFICATION))
+    assert response.status_code == 500
+    assert response.json() == {"detail": "No se pudo completar la creación de la notificación."}
+
+
+def test_api_create_maps_response_materialization_failure_to_safe_500(notification_service_client):
+    client, _, _, _ = notification_service_client
+    with patch.object(NotificationResponse, "model_validate", side_effect=RuntimeError("private failure")):
+        response = client.post(NOTIFICATION_URL, json=create_payload(VALID_NOTIFICATION))
+    assert response.status_code == 500
+    assert response.json() == {"detail": "No se pudo completar la creación de la notificación."}
+    assert "private failure" not in response.text
 
 
 def test_api_list_uses_injected_service(notification_service_client):
@@ -520,7 +619,9 @@ def test_api_list_uses_injected_service(notification_service_client):
 
 @pytest.fixture
 def api_notification(db_test_client, auth_headers):
-    response = db_test_client.post(NOTIFICATION_URL, headers=auth_headers, json=VALID_NOTIFICATION)
+    response = db_test_client.post(
+        NOTIFICATION_URL, headers=auth_headers, json=create_payload(VALID_NOTIFICATION)
+    )
     assert response.status_code == 201
     return response.json()
 
@@ -587,7 +688,7 @@ def test_api_patch_rejects_immutable_or_unknown_fields_without_partial_changes(
 ):
     first, second = notification_users
     original = db_test_client.post(
-        NOTIFICATION_URL, headers=first["headers"], json=VALID_NOTIFICATION
+        NOTIFICATION_URL, headers=first["headers"], json=create_payload(VALID_NOTIFICATION)
     ).json()
     response = db_test_client.patch(
         f"{NOTIFICATION_URL}/{original['id']}", headers=first["headers"],
@@ -605,12 +706,45 @@ def test_api_patch_rejects_immutable_or_unknown_fields_without_partial_changes(
     assert NotificationResponse.model_validate(persisted).model_dump(mode="json") == original
 
 
+def test_api_patch_rejects_recipient_without_partial_changes(
+    db_test_client, db_session, notification_model, auth_headers, api_notification
+):
+    response = db_test_client.patch(
+        f"{NOTIFICATION_URL}/{api_notification['id']}", headers=auth_headers,
+        json={"title": "No guardar", "recipient": "private-recipient"},
+    )
+    assert response.status_code == 422
+    assert response.json() == {"detail": [{
+        "type": "unexpected_field", "field": "recipient", "message": "Este campo no está permitido.",
+    }]}
+    db_session.expire_all()
+    persisted = db_session.get(notification_model, UUID(api_notification["id"]))
+    assert NotificationResponse.model_validate(persisted).model_dump(mode="json") == api_notification
+
+
+def test_api_patch_allows_sms_content_of_5000_without_resending(
+    db_test_client, auth_headers, api_notification, monkeypatch
+):
+    sender = create_autospec(NotificationSender, instance=True)
+    monkeypatch.setitem(app.dependency_overrides, get_notification_sender, lambda: sender)
+    response = db_test_client.patch(
+        f"{NOTIFICATION_URL}/{api_notification['id']}", headers=auth_headers,
+        json={"channel": "sms", "content": "x" * 5000},
+    )
+    assert response.status_code == 200
+    assert response.json()["content"] == "x" * 5000
+    assert response.json()["channel"] == "sms"
+    sender.simulate.assert_not_called()
+
+
 def test_api_delete_removes_row_and_listing_and_repeated_operations_return_404(
     db_test_client, db_session, notification_model, notification_users
 ):
     first, second = notification_users
     records = [
-        db_test_client.post(NOTIFICATION_URL, headers=user["headers"], json=VALID_NOTIFICATION).json()
+        db_test_client.post(
+            NOTIFICATION_URL, headers=user["headers"], json=create_payload(VALID_NOTIFICATION)
+        ).json()
         for user in (first, first, second)
     ]
     url = f"{NOTIFICATION_URL}/{records[0]['id']}"
@@ -633,7 +767,7 @@ def test_api_foreign_and_nonexistent_resources_are_indistinguishable_and_unchang
 ):
     first, second = notification_users
     original = db_test_client.post(
-        NOTIFICATION_URL, headers=second["headers"], json=VALID_NOTIFICATION
+        NOTIFICATION_URL, headers=second["headers"], json=create_payload(VALID_NOTIFICATION)
     ).json()
     arguments = {"json": {"title": "No guardar"}} if method == "patch" else {}
     responses = [
@@ -743,6 +877,10 @@ def test_notification_openapi_documents_security_responses_and_public_representa
         }]
     else:
         assert operation.get("parameters", []) == []
+    if method == "post":
+        assert responses["500"]["content"]["application/json"]["example"] == {
+            "detail": "No se pudo completar la creación de la notificación."
+        }
     if method == "delete":
         assert "content" not in responses[success]
     else:
@@ -758,21 +896,27 @@ def test_notification_openapi_documents_input_constraints_and_partial_update(not
     create = schemas["NotificationCreateRequest"]
     update = schemas["NotificationUpdateRequest"]
     response = schemas["NotificationResponse"]
-    assert set(create["required"]) == {"title", "content", "channel"}
+    assert set(create["required"]) == {"title", "content", "channel", "recipient"}
     assert not update.get("required")
     assert update["minProperties"] == 1
     assert create["additionalProperties"] is update["additionalProperties"] is False
     for contract in (create, update, response):
         fields = contract["properties"]
-        assert set(fields) == ({"id", "title", "content", "channel"} if contract is response else {
-            "title", "content", "channel"
-        })
+        assert set(fields) == ({"id", "title", "content", "channel"} if contract is response else (
+            {"title", "content", "channel", "recipient"} if contract is create else {
+                "title", "content", "channel"
+            }
+        ))
         for field, maximum in (("title", 200), ("content", 5000)):
             assert fields[field]["type"] == "string"
             assert fields[field]["minLength"] == 1
             assert fields[field]["maxLength"] == maximum
         assert fields["channel"]["type"] == "string"
         assert fields["channel"]["enum"] == ["email", "sms", "push"]
+    assert create["properties"]["recipient"]["type"] == "string"
+    assert create["properties"]["recipient"]["minLength"] == 1
+    assert create["properties"]["recipient"]["writeOnly"] is True
+    assert "SMS" in create["properties"]["recipient"]["description"]
     assert set(response["required"]) == {"id", "title", "content", "channel"}
     assert response["properties"]["id"]["format"] == "uuid"
     for field in update["properties"].values():
@@ -787,6 +931,21 @@ def test_notification_openapi_documents_input_constraints_and_partial_update(not
         assert body["content"]["application/json"]["schema"] == {
             "$ref": f"#/components/schemas/{name}"
         }
+
+
+def test_notification_openapi_explains_delivery_contract_limits(notification_openapi):
+    recipient_description = notification_openapi["components"]["schemas"][
+        "NotificationCreateRequest"
+    ]["properties"]["recipient"]["description"]
+    create_description = notification_openapi["paths"][NOTIFICATION_URL]["post"]["description"]
+
+    assert "espacios externos" in recipient_description
+    assert "minúsculas" in recipient_description
+    assert "160" in recipient_description
+    assert "simulación local" in create_description
+    assert "no acredita recepción real" in create_description
+    assert "puede existir" in create_description
+    assert "500" in create_description
 
 
 def test_notification_openapi_has_only_approved_operations(notification_openapi):
@@ -845,7 +1004,7 @@ def test_all_notification_operations_reject_invalid_tokens_without_mutations(
     url = NOTIFICATION_URL if method in {"post", "get"} else (
         f"{NOTIFICATION_URL}/{api_notification['id']}"
     )
-    arguments = {"json": VALID_NOTIFICATION} if method == "post" else (
+    arguments = {"json": create_payload(VALID_NOTIFICATION)} if method == "post" else (
         {"json": {"title": "No guardar"}} if method == "patch" else {}
     )
     response = getattr(db_test_client, method)(
@@ -858,3 +1017,405 @@ def test_all_notification_operations_reject_invalid_tokens_without_mutations(
     assert [NotificationResponse.model_validate(record).model_dump(mode="json") for record in records] == [
         api_notification
     ]
+
+
+def _delivery_logger(stream):
+    logger = logging.Logger("notification-http-delivery-test")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    handler = DeliveryLogHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+    return logger, handler
+
+
+@pytest.mark.parametrize(
+    "channel, recipient, strategy_factory",
+    [
+        ("email", "recipient@example.com", EmailDeliveryStrategy),
+        ("push", "device-token-private", PushDeliveryStrategy),
+    ],
+)
+def test_api_preparation_failure_records_one_protected_failure_and_never_persists(
+    db_test_client, db_session, notification_model, auth_headers, monkeypatch,
+    channel, recipient, strategy_factory,
+):
+    secret = "private-preparation-error"
+    stream = io.StringIO()
+    logger, _ = _delivery_logger(stream)
+    selected = Mock(wraps=strategy_factory())
+    selected.prepare.side_effect = RuntimeError(secret)
+    other = Mock()
+    sender = NotificationSender(
+        {channel: selected, "other-channel": other},
+        DeliveryRecorder(logger, lambda: datetime(2026, 11, 9, tzinfo=timezone.utc)),
+    )
+    monkeypatch.setitem(app.dependency_overrides, get_notification_sender, lambda: sender)
+
+    response = db_test_client.post(NOTIFICATION_URL, headers=auth_headers, json={
+        "title": "private-title", "content": "private-content", "channel": channel,
+        "recipient": recipient,
+    })
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "No se pudo completar la creación de la notificación."}
+    assert secret not in response.text
+    assert recipient not in response.text
+    assert selected.mock_calls == [
+        call.validate(recipient, "private-content"),
+        call.prepare("private-title", "private-content"),
+        call.protect_recipient(
+            "recipient@example.com" if channel == "email" else recipient
+        ),
+    ]
+    other.assert_not_called()
+    assert db_session.scalars(select(notification_model)).all() == []
+    event = json.loads(stream.getvalue())
+    assert event == {
+        "event": "notification_delivery", "channel": channel, "status": "failed",
+        "timestamp": "2026-11-09T00:00:00+00:00",
+        "recipient": "[redacted]",
+    }
+    assert all(value not in stream.getvalue() for value in (secret, recipient, "private-title", "private-content"))
+
+
+def test_api_delivery_execution_failure_stops_before_recording_or_persisting(
+    db_test_client, db_session, notification_model, auth_headers, monkeypatch
+):
+    secret = "private-validation-execution-error"
+    strategy = Mock(wraps=EmailDeliveryStrategy())
+    strategy.validate.side_effect = RuntimeError(secret)
+    recorder = Mock()
+    sender = NotificationSender({"email": strategy, "push": Mock()}, recorder)
+    monkeypatch.setitem(app.dependency_overrides, get_notification_sender, lambda: sender)
+
+    response = db_test_client.post(
+        NOTIFICATION_URL, headers=auth_headers, json=create_payload(VALID_NOTIFICATION)
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "No se pudo completar la creación de la notificación."}
+    assert secret not in response.text
+    strategy.prepare.assert_not_called()
+    strategy.protect_recipient.assert_not_called()
+    recorder.assert_not_called()
+    assert db_session.scalars(select(notification_model)).all() == []
+
+
+@pytest.mark.parametrize("failure_point", ["clock", "format", "write", "flush"])
+def test_api_recording_failures_from_real_recorder_handler_never_persist_or_retry(
+    db_test_client, db_session, notification_model, auth_headers, monkeypatch, failure_point
+):
+    secret = f"private-{failure_point}-failure"
+    stream = Mock()
+    logger, handler = _delivery_logger(stream)
+    clock = lambda: datetime(2026, 11, 9, tzinfo=timezone.utc)
+    if failure_point == "clock":
+        clock = Mock(side_effect=RuntimeError(secret))
+    elif failure_point == "format":
+        formatter = Mock()
+        formatter.format.side_effect = RuntimeError(secret)
+        handler.setFormatter(formatter)
+    elif failure_point == "write":
+        stream.write.side_effect = RuntimeError(secret)
+    else:
+        stream.flush.side_effect = RuntimeError(secret)
+    selected = Mock(wraps=EmailDeliveryStrategy())
+    other = Mock()
+    sender = NotificationSender(
+        {"email": selected, "push": other}, DeliveryRecorder(logger, clock)
+    )
+    monkeypatch.setitem(app.dependency_overrides, get_notification_sender, lambda: sender)
+
+    response = db_test_client.post(
+        NOTIFICATION_URL, headers=auth_headers, json=create_payload(VALID_NOTIFICATION)
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "No se pudo completar la creación de la notificación."}
+    assert secret not in response.text
+    selected.validate.assert_called_once_with("recipient@example.com", "Contenido")
+    selected.prepare.assert_called_once_with("Aviso", "Contenido")
+    selected.protect_recipient.assert_called_once_with("recipient@example.com")
+    other.assert_not_called()
+    assert db_session.scalars(select(notification_model)).all() == []
+    if failure_point == "clock":
+        assert clock.call_count == 1
+    else:
+        assert handler.stream is stream
+        stream.flush.side_effect = None
+
+
+def test_api_reversible_postgresql_write_failure_rolls_back_and_preserves_existing_rows(
+    db_test_client, db_session, notification_model, notification_users, monkeypatch
+):
+    first, second = notification_users
+    repository = NotificationRepository(db_session)
+    existing = [
+        repository.create(user["id"], title, "Conservar", "email")
+        for user, title in ((first, "Primera"), (second, "Segunda"))
+    ]
+    sender = create_autospec(NotificationSender, instance=True)
+    failure = SQLAlchemyError("private-reversible-commit-failure")
+
+    def fail_commit_after_real_flush():
+        db_session.flush()
+        raise failure
+
+    monkeypatch.setitem(app.dependency_overrides, get_notification_sender, lambda: sender)
+    with patch.object(db_session, "commit", side_effect=fail_commit_after_real_flush) as commit:
+        with patch.object(db_session, "rollback", wraps=db_session.rollback) as rollback:
+            with patch.object(db_session, "delete", wraps=db_session.delete) as delete:
+                response = db_test_client.post(
+                    NOTIFICATION_URL, headers=first["headers"], json=create_payload(VALID_NOTIFICATION)
+                )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "No se pudo completar la creación de la notificación."}
+    sender.simulate.assert_called_once_with("email", "recipient@example.com", "Aviso", "Contenido")
+    assert commit.call_count == 1
+    rollback.assert_called_once_with()
+    delete.assert_not_called()
+    assert db_session.scalar(text("SELECT 1")) == 1
+    rows = db_session.scalars(select(notification_model).order_by(notification_model.title)).all()
+    assert [(row.user_id, row.title, row.content) for row in rows] == [
+        (first["id"], "Primera", "Conservar"),
+        (second["id"], "Segunda", "Conservar"),
+    ]
+
+
+@pytest.mark.parametrize("failure_point", ["refresh", "model_validate", "model_dump", "json_response"])
+def test_api_postcommit_response_failures_return_safe_500_and_keep_confirmed_row(
+    db_test_client, db_session, notification_model, auth_headers, monkeypatch, failure_point
+):
+    secret = f"private-{failure_point}-failure"
+    sender = create_autospec(NotificationSender, instance=True)
+    monkeypatch.setitem(app.dependency_overrides, get_notification_sender, lambda: sender)
+    patch_target = {
+        "refresh": (db_session, "refresh"),
+        "model_validate": (NotificationResponse, "model_validate"),
+        "model_dump": (NotificationResponse, "model_dump"),
+        "json_response": ("app.routers.notifications.JSONResponse", None),
+    }[failure_point]
+    if patch_target[1] is None:
+        failure_patch = patch(patch_target[0], side_effect=RuntimeError(secret))
+    else:
+        failure_patch = patch.object(patch_target[0], patch_target[1], side_effect=RuntimeError(secret))
+
+    with patch.object(db_session, "commit", wraps=db_session.commit) as commit:
+        with patch.object(db_session, "delete", wraps=db_session.delete) as delete:
+            with failure_patch:
+                response = db_test_client.post(
+                    NOTIFICATION_URL, headers=auth_headers, json=create_payload(VALID_NOTIFICATION)
+                )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "No se pudo completar la creación de la notificación."}
+    assert secret not in response.text
+    sender.simulate.assert_called_once_with("email", "recipient@example.com", "Aviso", "Contenido")
+    commit.assert_called_once_with()
+    delete.assert_not_called()
+    db_session.rollback()
+    saved = db_session.scalar(
+        select(notification_model).where(notification_model.title == "Aviso")
+    )
+    assert saved is not None
+    assert (saved.content, saved.channel) == ("Contenido", "email")
+
+
+@pytest.mark.parametrize(
+    "channel, recipient, expected_code",
+    [
+        ("email", "invalid-email", "invalid_recipient_email"),
+        ("sms", "+1234567", "invalid_recipient_sms"),
+        ("sms", "+1234567890123456", "invalid_recipient_sms"),
+        ("sms", "+12345678\n", "invalid_recipient_sms"),
+        ("sms", "+١٢٣٤٥٦٧٨", "invalid_recipient_sms"),
+        ("push", "token with space", "invalid_recipient_push"),
+        ("push", "!" * 513, "invalid_recipient_push"),
+        ("push", "token\x7f", "invalid_recipient_push"),
+        ("push", "token-á", "invalid_recipient_push"),
+    ],
+)
+def test_api_recipient_format_and_unicode_errors_are_safe_and_never_simulate(
+    db_test_client, db_session, notification_model, auth_headers, monkeypatch,
+    channel, recipient, expected_code,
+):
+    recorder = Mock()
+    sender = NotificationSender(
+        {
+            "email": EmailDeliveryStrategy(),
+            "sms": SmsDeliveryStrategy(),
+            "push": PushDeliveryStrategy(),
+        },
+        recorder,
+    )
+    monkeypatch.setitem(app.dependency_overrides, get_notification_sender, lambda: sender)
+    response = db_test_client.post(NOTIFICATION_URL, headers=auth_headers, json={
+        "title": "Aviso", "content": "Contenido", "channel": channel, "recipient": recipient,
+    })
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["type"] == expected_code
+    assert response.json()["detail"][0]["field"] == "recipient"
+    assert recipient not in response.text
+    recorder.assert_not_called()
+    assert db_session.scalars(select(notification_model)).all() == []
+
+
+@pytest.mark.parametrize("recipient", [None, 42, True, [], {}])
+def test_api_recipient_non_string_errors_are_safe_and_never_simulate(
+    db_test_client, db_session, notification_model, auth_headers, monkeypatch, recipient
+):
+    sender = create_autospec(NotificationSender, instance=True)
+    monkeypatch.setitem(app.dependency_overrides, get_notification_sender, lambda: sender)
+    response = db_test_client.post(NOTIFICATION_URL, headers=auth_headers, json={
+        **VALID_NOTIFICATION, "recipient": recipient,
+    })
+    assert response.status_code == 422
+    assert response.json()["detail"] == [{
+        "type": "invalid_type", "field": "recipient", "message": "Ingresá un texto válido.",
+    }]
+    sender.simulate.assert_not_called()
+    assert db_session.scalars(select(notification_model)).all() == []
+
+
+@pytest.mark.parametrize(
+    "channel, recipient, content",
+    [
+        ("sms", "+12345678", "😀" * 160),
+        ("sms", "+123456789012345", "e\u0301" * 80),
+        ("push", "!", "Contenido"),
+        ("push", "~" * 512, "Contenido"),
+    ],
+)
+def test_api_recipient_boundaries_and_sms_unicode_code_points_are_accepted(
+    db_test_client, db_session, notification_model, auth_headers, channel, recipient, content
+):
+    response = db_test_client.post(NOTIFICATION_URL, headers=auth_headers, json={
+        "title": "Aviso", "content": content, "channel": channel, "recipient": recipient,
+    })
+    assert response.status_code == 201
+    assert response.json() == {"id": response.json()["id"], "title": "Aviso", "content": content, "channel": channel}
+    assert db_session.get(notification_model, UUID(response.json()["id"])) is not None
+
+
+@pytest.mark.parametrize("kind", ["missing", "invalid", "expired", "deleted", "unknown"])
+def test_api_unauthorized_post_never_simulates_or_writes_for_all_auth_failures(
+    db_test_client, db_session, notification_model, authenticated_user_factory, api_notification,
+    monkeypatch, kind,
+):
+    sender = create_autospec(NotificationSender, instance=True)
+    monkeypatch.setitem(app.dependency_overrides, get_notification_sender, lambda: sender)
+    headers = {}
+    if kind == "invalid":
+        headers = {"Authorization": "Bearer invalid"}
+    elif kind == "expired":
+        now = datetime.now(timezone.utc)
+        token = jwt.encode(
+            {"sub": str(uuid4()), "iat": now, "exp": now - timedelta(seconds=1)},
+            settings.jwt_secret_key.get_secret_value(), algorithm="HS256",
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+    elif kind == "unknown":
+        headers = {"Authorization": f"Bearer {create_access_token(uuid4())}"}
+    elif kind == "deleted":
+        actor = authenticated_user_factory("deleted-post-owner@example.com")
+        token = actor["headers"]["Authorization"].removeprefix("Bearer ")
+        db_session.delete(db_session.get(User, actor["id"]))
+        db_session.commit()
+        headers = {"Authorization": f"Bearer {token}"}
+
+    response = db_test_client.post(
+        NOTIFICATION_URL, headers=headers, json=create_payload(VALID_NOTIFICATION)
+    )
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+    sender.simulate.assert_not_called()
+    records = db_session.scalars(select(notification_model)).all()
+    assert [NotificationResponse.model_validate(record).model_dump(mode="json") for record in records] == [
+        api_notification
+    ]
+
+
+def test_api_rest_crud_after_post_never_resends_or_records_events(
+    db_test_client, auth_headers, monkeypatch
+):
+    sender = create_autospec(NotificationSender, instance=True)
+    monkeypatch.setitem(app.dependency_overrides, get_notification_sender, lambda: sender)
+    created = db_test_client.post(
+        NOTIFICATION_URL, headers=auth_headers, json=create_payload(VALID_NOTIFICATION)
+    ).json()
+    sender.simulate.assert_called_once()
+    sender.reset_mock()
+
+    assert db_test_client.get(NOTIFICATION_URL, headers=auth_headers).status_code == 200
+    assert db_test_client.patch(
+        f"{NOTIFICATION_URL}/{created['id']}", headers=auth_headers, json={"title": "Editada"}
+    ).status_code == 200
+    assert db_test_client.delete(
+        f"{NOTIFICATION_URL}/{created['id']}", headers=auth_headers
+    ).status_code == 204
+    sender.simulate.assert_not_called()
+
+
+def test_api_directly_persisted_preexisting_notification_remains_editable_without_delivery(
+    db_test_client, db_session, notification_model, authenticated_user_factory, monkeypatch
+):
+    owner = authenticated_user_factory("preexisting-owner@example.com")
+    record = notification_model(
+        user_id=owner["id"], title="Anterior", content="Contenido anterior", channel="sms"
+    )
+    db_session.add(record)
+    db_session.flush()
+    sender = create_autospec(NotificationSender, instance=True)
+    monkeypatch.setitem(app.dependency_overrides, get_notification_sender, lambda: sender)
+
+    assert db_test_client.get(NOTIFICATION_URL, headers=owner["headers"]).json() == [{
+        "id": str(record.id), "title": "Anterior", "content": "Contenido anterior", "channel": "sms",
+    }]
+    response = db_test_client.patch(
+        f"{NOTIFICATION_URL}/{record.id}", headers=owner["headers"], json={"content": "x" * 5000}
+    )
+    assert response.status_code == 200
+    assert response.json()["content"] == "x" * 5000
+    assert db_test_client.delete(f"{NOTIFICATION_URL}/{record.id}", headers=owner["headers"]).status_code == 204
+    sender.simulate.assert_not_called()
+
+
+def test_api_two_posts_emit_two_protected_events_and_two_independent_rows(
+    db_test_client, db_session, notification_model, auth_headers, monkeypatch
+):
+    stream = io.StringIO()
+    logger, _ = _delivery_logger(stream)
+    sender = NotificationSender(
+        {
+            "email": EmailDeliveryStrategy(),
+            "push": PushDeliveryStrategy(),
+        },
+        DeliveryRecorder(logger, lambda: datetime(2026, 11, 9, tzinfo=timezone.utc)),
+    )
+    monkeypatch.setitem(app.dependency_overrides, get_notification_sender, lambda: sender)
+    payloads = [
+        create_payload(VALID_NOTIFICATION),
+        {"title": "Segundo", "content": "Otro contenido", "channel": "push", "recipient": "push-private-token"},
+    ]
+    responses = [
+        db_test_client.post(NOTIFICATION_URL, headers=auth_headers, json=payload)
+        for payload in payloads
+    ]
+    assert [response.status_code for response in responses] == [201, 201]
+    assert len({response.json()["id"] for response in responses}) == 2
+    assert len(db_session.scalars(select(notification_model)).all()) == 2
+    events = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert events == [
+        {
+            "event": "notification_delivery", "channel": "email", "status": "simulated",
+            "timestamp": "2026-11-09T00:00:00+00:00", "recipient": "[redacted]",
+        },
+        {
+            "event": "notification_delivery", "channel": "push", "status": "simulated",
+            "timestamp": "2026-11-09T00:00:00+00:00", "recipient": "[redacted]",
+        },
+    ]
+    assert all(set(event) == {"event", "channel", "status", "timestamp", "recipient"} for event in events)
+    assert all(secret not in stream.getvalue() for secret in ("recipient@example.com", "push-private-token", "Aviso", "Contenido", "Segundo", "Otro contenido"))

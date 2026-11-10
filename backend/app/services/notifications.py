@@ -2,6 +2,7 @@ from uuid import UUID
 
 from app.models.notification import Notification
 from app.repositories.notifications import NotificationRepository
+from app.services.delivery.sender import NotificationSender
 
 
 class NotificationNotFoundError(Exception):
@@ -9,10 +10,14 @@ class NotificationNotFoundError(Exception):
 
 
 class NotificationService:
-    def __init__(self, notifications: NotificationRepository):
+    def __init__(self, notifications: NotificationRepository, sender: NotificationSender):
         self.notifications = notifications
+        self.sender = sender
 
-    def create(self, user_id: UUID, title: str, content: str, channel: str) -> Notification:
+    def create(
+        self, user_id: UUID, title: str, content: str, channel: str, recipient: str
+    ) -> Notification:
+        self.sender.simulate(channel, recipient, title, content)
         return self.notifications.create(user_id, title, content, channel)
 
     def list_own(self, user_id: UUID) -> list[Notification]:

@@ -1,9 +1,9 @@
 # Plan 001 — Gestión de notificaciones propias
 
 Estado: aprobado explícitamente por el usuario en la conversación.
-Spec de referencia: [spec.md](spec.md), aprobada.
+Spec de referencia: [spec.md](spec.md), implementada con cierre autorizado.
 
-Este documento registra las decisiones técnicas aprobadas. El desglose de [tasks.md](tasks.md) también fue aprobado; T1–T7 están completadas y verificadas. El 2026-11-08 se autorizó explícitamente ejecutar T4–T7 sin pausas, informando solo el resultado final. El cierre de la spec espera conformidad del usuario.
+Este documento registra las decisiones técnicas aprobadas. El desglose de [tasks.md](tasks.md) también fue aprobado; T1–T7 están completadas y verificadas. El 2026-11-08 se autorizó explícitamente ejecutar T4–T7 sin pausas, informando solo el resultado final. Posteriormente el usuario dio conformidad expresa para cerrar 001 y comenzar la fase de spec de 002, según lo comunicado por el coordinador. El cierre es documental y usa las evidencias históricas registradas; no se ejecutaron nuevamente las verificaciones.
 
 ## Enfoque y límites
 - Mantener FastAPI, SQLAlchemy síncrono, PostgreSQL y Alembic, sin dependencias nuevas, cambios de despliegue ni refactors de autenticación.
@@ -125,5 +125,5 @@ Los identificadores corresponden a [tasks.md](tasks.md), aprobado independientem
 - Al finalizar: `./up_test.sh`, comprobación de `coverage/coverage.xml`, comparación de metadatos y revisión de OpenAPI/documentación. Informar resultados observados, no solo cobertura.
 - T2 reemplazó la revisión fija del test de migraciones por el head obtenido de Alembic, conservando la comparación real de metadatos y versión en la base de testing.
 
-## Siguiente aprobación
-La spec, este plan y [tasks.md](tasks.md) están aprobados. T1–T7 están completadas y verificadas técnicamente. No quedan tareas de implementación en esta spec; su cierre y el cambio de estado a implementada esperan conformidad del usuario con el resultado final.
+## Cierre y continuidad
+La spec, este plan y [tasks.md](tasks.md) fueron aprobados. T1–T7 están completadas y verificadas técnicamente; el usuario autorizó expresamente el cierre el 2026-11-08. No quedan tareas ni aprobación de cierre pendientes en 001. La nueva funcionalidad se describe por separado en [002 — Envío de notificación](../002-notification-delivery/spec.md), todavía en borrador y sin plan ni tareas.

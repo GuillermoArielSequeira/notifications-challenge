@@ -14,21 +14,26 @@ from app.schemas.notification import (
 
 
 VALID_DATA = {"title": "Recordatorio", "content": "Contenido de prueba", "channel": "email"}
+CREATE_DATA = {**VALID_DATA, "recipient": "recipient@example.com"}
 REQUEST_SCHEMAS = (NotificationCreateRequest, NotificationUpdateRequest)
 
 
 def request_payload(schema, changes):
-    return {**VALID_DATA, **changes} if schema is NotificationCreateRequest else changes
+    return {**CREATE_DATA, **changes} if schema is NotificationCreateRequest else changes
 
 
 @pytest.mark.parametrize("channel", ["email", "sms", "push"])
 def test_create_accepts_each_channel(channel):
-    payload = {**VALID_DATA, "channel": channel}
+    recipients = {"email": "recipient@example.com", "sms": "+12345678", "push": "device-token"}
+    payload = {**CREATE_DATA, "channel": channel, "recipient": recipients[channel]}
     assert NotificationCreateRequest.model_validate(payload).model_dump() == payload
 
 
 def test_create_preserves_text_and_significant_whitespace():
-    payload = {"title": "  Aviso áéí  ", "content": "\n Texto con espacios \t\n", "channel": "sms"}
+    payload = {
+        "title": "  Aviso áéí  ", "content": "\n Texto con espacios \t\n",
+        "channel": "sms", "recipient": "+12345678",
+    }
     assert NotificationCreateRequest.model_validate(payload).model_dump() == payload
 
 
@@ -74,9 +79,9 @@ def test_request_rejects_invalid_channels_without_normalization(schema, channel)
     assert error.value.errors()[0]["loc"] == ("channel",)
 
 
-@pytest.mark.parametrize("field", ["title", "content", "channel"])
+@pytest.mark.parametrize("field", ["title", "content", "channel", "recipient"])
 def test_create_requires_all_fields(field):
-    payload = {key: value for key, value in VALID_DATA.items() if key != field}
+    payload = {key: value for key, value in CREATE_DATA.items() if key != field}
     with pytest.raises(ValidationError) as error:
         NotificationCreateRequest.model_validate(payload)
     assert error.value.errors()[0]["type"] == "missing"
@@ -90,6 +95,20 @@ def test_request_rejects_unknown_or_immutable_fields(schema, field):
     with pytest.raises(ValidationError) as error:
         schema.model_validate(payload)
     assert any(item["type"] == "extra_forbidden" and item["loc"] == (field,) for item in error.value.errors())
+
+
+@pytest.mark.parametrize("value", [None, 42, True, [], {}, b"private-recipient"])
+def test_create_rejects_non_string_recipient_without_coercion(value):
+    with pytest.raises(ValidationError) as error:
+        NotificationCreateRequest.model_validate({**CREATE_DATA, "recipient": value})
+    assert error.value.errors()[0]["loc"] == ("recipient",)
+
+
+def test_create_recipient_is_write_only_and_hidden_from_repr():
+    request = NotificationCreateRequest.model_validate(CREATE_DATA)
+    assert "recipient='recipient@example.com'" not in repr(request)
+    schema = NotificationCreateRequest.model_json_schema()
+    assert schema["properties"]["recipient"]["writeOnly"] is True
 
 
 @pytest.mark.parametrize("fields", [subset for size in (1, 2, 3) for subset in combinations(VALID_DATA, size)])
@@ -144,12 +163,14 @@ def test_response_only_exposes_public_fields_from_attributes():
 
 def test_create_json_schema_documents_required_fields_and_constraints():
     schema = NotificationCreateRequest.model_json_schema()
-    assert set(schema["required"]) == {"title", "content", "channel"}
+    assert set(schema["required"]) == {"title", "content", "channel", "recipient"}
     assert schema["additionalProperties"] is False
     assert schema["properties"]["title"]["minLength"] == 1
     assert schema["properties"]["title"]["maxLength"] == 200
     assert schema["properties"]["content"]["maxLength"] == 5000
     assert schema["properties"]["channel"]["enum"] == ["email", "sms", "push"]
+    assert schema["properties"]["recipient"]["minLength"] == 1
+    assert schema["properties"]["recipient"]["writeOnly"] is True
 
 
 def test_update_json_schema_documents_omittable_but_non_nullable_fields():
@@ -165,11 +186,11 @@ def test_update_json_schema_documents_omittable_but_non_nullable_fields():
 
 
 @pytest.mark.parametrize("schema, payload, expected", [
-    (NotificationCreateRequest, {**VALID_DATA, "title": "  "}, {
+    (NotificationCreateRequest, {**CREATE_DATA, "title": "  "}, {
         "type": "blank_text", "field": "title",
         "message": "El campo no puede contener solo espacios en blanco.",
     }),
-    (NotificationCreateRequest, {**VALID_DATA, "channel": "private-invalid-channel"}, {
+    (NotificationCreateRequest, {**CREATE_DATA, "channel": "private-invalid-channel"}, {
         "type": "invalid_channel", "field": "channel",
         "message": "El canal debe ser email, sms o push.",
     }),

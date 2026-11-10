@@ -1,10 +1,12 @@
 # Tareas 001 — Gestión de notificaciones propias
 
-Estado: T1–T7 completadas con verificación técnica; cierre de la spec pendiente de conformidad del usuario con el resultado final.
+Estado: T1–T7 completadas con verificación técnica; spec cerrada con conformidad expresa del usuario el 2026-11-08, comunicada por el coordinador.
 Referencias: [spec aprobada](spec.md) y [plan aprobado](plan.md).
 
+El cierre documental usa las evidencias históricas del 2026-11-08 (`./up_test.sh`: 426 tests, 99% de cobertura global); no hubo una nueva ejecución de comandos o tests en esta sesión. Las condiciones y resultados por tarea siguientes registran su contexto original de ejecución.
+
 ## Condiciones de ejecución
-- El 2026-11-08 el usuario autorizó explícitamente terminar todas las tareas restantes (T4–T7) y pidió recibir solo el resultado final. Para esta ejecución se continúa secuencialmente sin pausas entre tareas, manteniendo tests primero y evidencias por tarea. Las casillas se marcan solo con evidencias de finalización; el cierre de la spec espera conformidad con el resultado.
+- El 2026-11-08 el usuario autorizó explícitamente terminar todas las tareas restantes (T4–T7) y pidió recibir solo el resultado final. Esa ejecución continuó secuencialmente sin pausas entre tareas, manteniendo tests primero y evidencias por tarea. Las casillas se marcaron solo con evidencias de finalización; la conformidad de cierre se recibió posteriormente, como se registra al inicio.
 - Antes de T1, activar Docker y ejecutar `./up_test.sh` desde la raíz para obtener una línea base actual. Si falla, informar el motivo antes de modificar la aplicación; no confundir un fallo de infraestructura con un test rojo del comportamiento.
 - Para cada cambio de comportamiento: escribir el test, comprobar su fallo esperado, implementar lo mínimo y verificar que pasa. No agregar dependencias, modificar producción ni ejecutar commits o pushes.
 - Los comandos Docker indicados se ejecutan desde la raíz y reconstruyen la imagen para incluir los cambios. Usar exclusivamente las fixtures y PostgreSQL de testing existentes.
@@ -92,7 +94,7 @@ Referencias: [spec aprobada](spec.md) y [plan aprobado](plan.md).
   - Contrato verificado: únicamente las cuatro operaciones aprobadas; bearer obligatorio, códigos 201/200/200/204, 401/422 y 404 donde corresponde; DELETE sin cuerpo; representación pública sin propietario; UUID de ruta; contratos de creación y respuesta con campos requeridos; PATCH omitible pero no nulo, no vacío y sin propiedades adicionales, con límites/canales correctos. No se añadió consulta individual ni envío.
   - Documentación: `README.md` incluye contratos, validación, aislamiento, ejemplos locales y separación de capas; `AGENTS.md` refleja el alcance real. Estrategias de envío y frontend siguen pendientes. No se actualizó el despliegue ni se modificaron datos de desarrollo/producción.
   - Verificación completa: `./up_test.sh` pasó **426 tests** con Python 3.13.18 y PostgreSQL 17, **99% de cobertura global** y **100% en modelo, esquemas, repositorio, servicio y router de notificaciones**. Incluye regresiones de autenticación/validación y coincidencia de metadatos/head real de Alembic en `notifications_test`. `test -s coverage/coverage.xml` y `git diff --check` pasaron. Enlaces locales y límites entre capas comprobados; sin dependencias nuevas, commits ni pushes.
-  - Resultado: criterios de aceptación verificados técnicamente; se conserva `spec.md` como aprobada hasta la conformidad del usuario. Las tareas de esta spec están terminadas, sin bloqueos técnicos.
+  - Resultado al terminar T7: criterios de aceptación verificados técnicamente; en ese momento se conservó `spec.md` como aprobada a la espera de conformidad. Las tareas quedaron terminadas, sin bloqueos técnicos. La conformidad posterior y el cierre documental se registran al inicio.
 
 ## Contraste final con los criterios de aceptación
 
@@ -106,4 +108,4 @@ Referencias: [spec aprobada](spec.md) y [plan aprobado](plan.md).
 ## Evidencias
 - Línea base previa a T1, verificada el 2026-11-04: `./up_test.sh` pasó los 74 tests existentes con Python 3.13.18 y PostgreSQL 17; cobertura 99% y reporte XML generado. Esto no completa ninguna tarea ni verifica la feature nueva.
 - T1–T7 completadas con evidencias de rojo y verde indicadas junto a cada tarea. T4–T7 fueron autorizadas conjuntamente el 2026-11-08; no se amplió el alcance aprobado.
-- Las pruebas actuales cubren RF-1–RF-9 y RNF-1–RNF-4: contratos, validación, modelo, migración, repositorio, servicio y CRUD HTTP autenticado y aislado por propietario. La verificación se realizó solo en PostgreSQL de testing; la conformidad final para cerrar la spec sigue pendiente.
+- Las pruebas registradas cubren RF-1–RF-9 y RNF-1–RNF-4: contratos, validación, modelo, migración, repositorio, servicio y CRUD HTTP autenticado y aislado por propietario. La verificación se realizó solo en PostgreSQL de testing. La conformidad final para cerrar la spec fue comunicada por el coordinador el 2026-11-08; no supone aprobación de la nueva spec 002.
